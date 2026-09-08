@@ -204,7 +204,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
                       type="text"
                       value={userId}
                       onChange={(e) => setUserId(e.target.value)}
-                      placeholder="e.g. john_smith"
+                      placeholder="e.g. adam_ali"
                       className="w-full text-xs pl-9 pr-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#005f60] bg-white text-slate-900 font-medium"
                       autoFocus
                     />
@@ -246,7 +246,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
                   className="w-full py-2.5 px-4 rounded-lg bg-[#005f60] hover:bg-[#004d4e] text-white text-xs font-bold shadow-md transition-colors flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                 >
                   <LogIn className="w-4 h-4" />
-                  {isLoading ? 'Verifying...' : 'Access Inventory System'}
+                  {isLoading ? 'Verifying...' : 'Login'}
                 </button>
 
                 <div className="text-center pt-1">
@@ -275,7 +275,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
                       type="text"
                       value={userId}
                       onChange={(e) => setUserId(e.target.value)}
-                      placeholder="e.g. alex_rivera"
+                      placeholder="e.g. Aina_07"
                       className="w-full text-xs pl-9 pr-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#005f60] bg-white text-slate-900 font-medium"
                       autoFocus
                     />
