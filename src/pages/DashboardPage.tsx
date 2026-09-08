@@ -14,7 +14,7 @@ import {
   Upload,
   Sparkles,
 } from 'lucide-react';
-import { InventoryItem, ScanRecord, StockCheckRecord } from '../types';
+import { InventoryItem, ScanRecord } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
 import { StatCard } from '../components/StatCard';
 import { PageId } from '../components/Sidebar';
@@ -22,14 +22,12 @@ import { PageId } from '../components/Sidebar';
 interface DashboardPageProps {
   items: InventoryItem[];
   scanHistory: ScanRecord[];
-  stockChecks: StockCheckRecord[];
   onNavigate: (page: PageId, scanMode?: 'webcam' | 'upload') => void;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
   items,
   scanHistory,
-  stockChecks,
   onNavigate,
 }) => {
   // Statistics calculations
@@ -41,32 +39,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   // Recent YOLO scans (up to 4)
   const recentScans = scanHistory.slice(0, 4);
 
-  // Extract recent discrepancies from stock checks
-  const recentDiscrepancies: Array<{
-    id: string;
-    item: string;
-    location: string;
-    expected: number;
-    detected: number;
-    difference: number;
-    timestamp: string;
-  }> = [];
-
-  stockChecks.forEach((chk) => {
-    chk.items
-      .filter((it) => it.difference !== 0)
-      .forEach((it, idx) => {
-        recentDiscrepancies.push({
-          id: `${chk.id}-${idx}`,
-          item: it.name,
-          location: chk.location,
-          expected: it.expected,
-          detected: it.detected,
-          difference: it.difference,
-          timestamp: chk.timestamp,
-        });
-      });
-  });
+  // Low stock items (available quantity <= 2 or marked Low Stock)
+  const lowStockItems = items.filter(
+    (it) => it.availableQuantity <= 2 || it.status === 'Low Stock'
+  );
 
   // Recent Checked Out non-consumable assets
   const checkedOutAssets = items
@@ -278,7 +254,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </div>
 
-        {/* Audit Discrepancies Card */}
+        {/* Stock Level Alerts Card */}
         <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
@@ -287,56 +263,56 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   <AlertTriangle className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-900">Audit Discrepancies</h3>
+                  <h3 className="text-sm font-semibold text-slate-900">Stock Level Alerts</h3>
                   <p className="text-[11px] text-slate-500">
-                    Physical detection vs expected stock delta
+                    Low quantity and replenishment monitors
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => onNavigate('stock-check')}
+                onClick={() => onNavigate('inventory')}
                 className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1"
               >
-                Run Stock Check
+                View Inventory
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </button>
             </div>
 
             <div className="space-y-2.5">
-              {recentDiscrepancies.length > 0 ? (
-                recentDiscrepancies.slice(0, 4).map((disc) => (
+              {lowStockItems.length > 0 ? (
+                lowStockItems.slice(0, 4).map((item) => (
                   <div
-                    key={disc.id}
+                    key={item.id}
                     className="p-3 rounded-lg border border-slate-200/80 bg-slate-50/70 hover:bg-slate-50 transition-colors flex items-center justify-between text-xs"
                   >
                     <div>
                       <span className="font-bold text-slate-900 block text-xs">
-                        {disc.item}
+                        {item.name}
                       </span>
                       <span className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3 text-[#005f60]" />
-                        {disc.location}
+                        {item.location} • {item.category}
                       </span>
                     </div>
 
                     <div className="flex items-center gap-3">
                       <div className="text-right text-[11px] font-mono text-slate-500">
                         <div>
-                          Exp: <span className="text-slate-800 font-bold">{disc.expected}</span>
+                          Avail: <span className="text-slate-800 font-bold">{item.availableQuantity}</span>
                         </div>
                         <div>
-                          Det: <span className="text-slate-800 font-bold">{disc.detected}</span>
+                          Total: <span className="text-slate-800 font-bold">{item.quantity}</span>
                         </div>
                       </div>
 
                       <div
                         className={`px-2.5 py-1 rounded font-mono text-xs font-bold ${
-                          disc.difference < 0
-                            ? 'bg-rose-50 text-rose-800 border border-rose-200'
-                            : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                          item.availableQuantity === 0
+                            ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                            : 'bg-amber-100 text-amber-800 border border-amber-200'
                         }`}
                       >
-                        {disc.difference > 0 ? `+${disc.difference}` : disc.difference}
+                        {item.availableQuantity === 0 ? 'Out of Stock' : `${item.availableQuantity} Left`}
                       </div>
                     </div>
                   </div>
@@ -344,19 +320,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               ) : (
                 <div className="py-8 text-center text-xs text-emerald-800 bg-emerald-50/60 rounded-lg border border-emerald-200 flex flex-col items-center justify-center">
                   <ShieldCheck className="w-6 h-6 text-emerald-600 mb-1" />
-                  <span className="font-medium">No discrepancies flagged across verified stores.</span>
+                  <span className="font-medium">All store inventory levels are healthy.</span>
                 </div>
               )}
             </div>
           </div>
 
           <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Periodic stock audits prevent shrinkage</span>
+            <span>Keep safety buffers to prevent stockouts</span>
             <button
-              onClick={() => onNavigate('stock-check')}
+              onClick={() => onNavigate('inventory')}
               className="text-[#005f60] font-semibold hover:underline text-[11px]"
             >
-              Start Stock Check →
+              Open Inventory List →
             </button>
           </div>
         </div>

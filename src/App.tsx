@@ -4,10 +4,9 @@ import { HeaderBar } from './components/HeaderBar';
 import { DashboardPage } from './pages/DashboardPage';
 import { InventoryPage } from './pages/InventoryPage';
 import { ScanInventoryPage } from './pages/ScanInventoryPage';
-import { StockCheckPage } from './pages/StockCheckPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { AuthPage } from './components/AuthPage';
+import { AuthPage } from './components/AuthPage.tsx';
 import { storageService, StorageState } from './services/storageService';
 import { authService } from './services/authService';
 import { ValidLocation, ModelConfig, UserAccount, ItemCategory } from './types';
@@ -246,40 +245,6 @@ export default function App() {
     setActivePage('dashboard');
   };
 
-  const handleConfirmStockCheck = (record: any, applyToInventory?: boolean) => {
-    const enrichedRecord = {
-      ...record,
-      user: record.user || currentUser?.userName || 'Senior Storekeeper',
-      team: record.team || currentUser?.teamName || 'Warehouse Team A',
-    };
-
-    storageService.addStockCheckRecord(enrichedRecord);
-
-    // If requested, synchronize official inventory available quantities with verified physical counts
-    if (applyToInventory && record.items) {
-      record.items.forEach((auditItem: any) => {
-        const match = storageState.items.find(
-          (it) => it.location === record.location && it.name.toLowerCase() === auditItem.name.toLowerCase()
-        );
-        if (match) {
-          storageService.updateItem({
-            ...match,
-            availableQuantity: auditItem.detected,
-            quantity: auditItem.detected + (match.quantity - match.availableQuantity),
-            lastStocktakeDate: new Date().toISOString().slice(0, 10),
-            lastSeen: `${new Date().toISOString().slice(0, 10)} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-          });
-        }
-      });
-    }
-
-    addToast(
-      'success',
-      'Stock Check Completed',
-      `Audit recorded for ${record.location} with ${record.discrepancyCount} discrepancies.`
-    );
-  };
-
   const handleForceSync = () => {
     const result = storageService.syncQueue();
     addToast(
@@ -360,7 +325,6 @@ export default function App() {
               <DashboardPage
                 items={storageState.items}
                 scanHistory={storageState.scanHistory}
-                stockChecks={storageState.stockChecks}
                 onNavigate={handleNavigate}
               />
             )}
@@ -382,20 +346,9 @@ export default function App() {
               />
             )}
 
-            {activePage === 'stock-check' && (
-              <StockCheckPage
-                items={storageState.items}
-                scanHistory={storageState.scanHistory}
-                onConfirmStockCheck={handleConfirmStockCheck}
-                onNavigateToScan={handleNavigateToScanWithLocation}
-                currentUser={currentUser}
-              />
-            )}
-
             {activePage === 'history' && (
               <ActivityHistoryPage
                 scanHistory={storageState.scanHistory}
-                stockChecks={storageState.stockChecks}
               />
             )}
 

@@ -1,7 +1,6 @@
 import {
   InventoryItem,
   ScanRecord,
-  StockCheckRecord,
   OfflineMutation,
   StorageLedger,
   ModelConfig,
@@ -17,7 +16,6 @@ const NETWORK_OVERRIDE_KEY = 'ai_inventory_network_override';
 export interface StorageState {
   items: InventoryItem[];
   scanHistory: ScanRecord[];
-  stockChecks: StockCheckRecord[];
   modelConfig: ModelConfig;
   pendingMutations: OfflineMutation[];
   lastSyncedAt: string;
@@ -59,14 +57,10 @@ class StorageService {
           const realScans = Array.isArray(parsed.scanHistory)
             ? parsed.scanHistory.filter((s) => !s.id.startsWith('scan-10') && !s.id.startsWith('scan-seed'))
             : [];
-          const realStockChecks = Array.isArray(parsed.stockChecks)
-            ? parsed.stockChecks.filter((c) => !c.id.startsWith('chk-20') && !c.id.startsWith('chk-seed'))
-            : [];
 
           return {
             items: validItems,
             scanHistory: realScans,
-            stockChecks: realStockChecks,
             modelConfig: parsed.modelConfig || DEFAULT_MODEL_CONFIG,
             pendingMutations: Array.isArray(parsed.pendingMutations) ? parsed.pendingMutations : [],
             lastSyncedAt: parsed.lastUpdated || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -82,7 +76,6 @@ class StorageService {
     return {
       items: [],
       scanHistory: [],
-      stockChecks: [],
       modelConfig: { ...DEFAULT_MODEL_CONFIG },
       pendingMutations: [],
       lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -92,10 +85,6 @@ class StorageService {
   }
 
   private getSeedScanHistory(): ScanRecord[] {
-    return [];
-  }
-
-  private getSeedStockChecks(): StockCheckRecord[] {
     return [];
   }
 
@@ -121,7 +110,6 @@ class StorageService {
         lastUpdated: this.state.lastSyncedAt,
         items: this.state.items,
         scanHistory: this.state.scanHistory,
-        stockChecks: this.state.stockChecks,
         modelConfig: this.state.modelConfig,
         pendingMutations: this.state.pendingMutations,
       };
@@ -290,19 +278,6 @@ class StorageService {
     return record;
   }
 
-  public addStockCheckRecord(check: Omit<StockCheckRecord, 'id' | 'timestamp'>): StockCheckRecord {
-    const record: StockCheckRecord = {
-      ...check,
-      id: `chk-${Date.now()}`,
-      timestamp: `${new Date().toISOString().slice(0, 10)} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-    };
-
-    const stockChecks = [record, ...this.state.stockChecks];
-    this.recordMutation('STOCK_CHECK', record);
-    this.updateState({ stockChecks });
-    return record;
-  }
-
   public updateModelConfig(config: Partial<ModelConfig>): void {
     const modelConfig = { ...this.state.modelConfig, ...config };
     this.updateState({ modelConfig });
@@ -340,7 +315,6 @@ class StorageService {
       lastUpdated: new Date().toISOString(),
       items: this.state.items,
       scanHistory: this.state.scanHistory,
-      stockChecks: this.state.stockChecks,
       modelConfig: this.state.modelConfig,
       pendingMutations: this.state.pendingMutations,
     };
@@ -395,7 +369,6 @@ class StorageService {
       this.updateState({
         items: validatedItems,
         scanHistory: Array.isArray(parsed.scanHistory) ? parsed.scanHistory : [],
-        stockChecks: Array.isArray(parsed.stockChecks) ? parsed.stockChecks : [],
         pendingMutations: [],
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       });
@@ -418,7 +391,6 @@ class StorageService {
     this.updateState({
       items: [],
       scanHistory: [],
-      stockChecks: [],
       modelConfig: { ...DEFAULT_MODEL_CONFIG },
       pendingMutations: [],
       lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),

@@ -6,7 +6,6 @@ import {
   KeyRound,
   LogIn,
   UserPlus,
-  CheckCircle2,
   AlertCircle,
   Cpu,
   Eye,

@@ -2,8 +2,6 @@ import React, { useState } from 'react';
 import {
   History,
   Scan,
-  ClipboardCheck,
-  Filter,
   Calendar,
   User,
   MapPin,
@@ -12,26 +10,24 @@ import {
   Search,
   Users,
 } from 'lucide-react';
-import { ScanRecord, StockCheckRecord } from '../types';
+import { ScanRecord } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
 
 interface ActivityHistoryPageProps {
   scanHistory: ScanRecord[];
-  stockChecks: StockCheckRecord[];
 }
 
 export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
   scanHistory,
-  stockChecks,
 }) => {
-  const [filterType, setFilterType] = useState<'ALL' | 'YOLO_SCAN' | 'STOCK_CHECK'>('ALL');
+  const [filterType, setFilterType] = useState<'ALL' | 'Confirmed' | 'Discrepancy Flagged'>('ALL');
   const [selectedLocation, setSelectedLocation] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Unify entries into audit logs
+  // Map scan records to display entries
   type UnifiedHistoryEntry = {
     id: string;
-    type: 'YOLO_SCAN' | 'STOCK_CHECK';
+    type: 'YOLO_SCAN';
     date: string;
     time: string;
     location: string;
@@ -68,36 +64,9 @@ export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
     });
   });
 
-  stockChecks.forEach((chk) => {
-    const parts = chk.timestamp.split(' ');
-    const date = parts[0] || chk.timestamp;
-    const time = parts[1] || '';
-    const itemsSummary = chk.items
-      .map((it) => `${it.name} [Exp: ${it.expected}, Det: ${it.detected}]`)
-      .join(', ');
-    const totalDet = chk.items.reduce((acc, it) => acc + it.detected, 0);
-
-    unifiedLogs.push({
-      id: chk.id,
-      type: 'STOCK_CHECK',
-      date,
-      time,
-      location: chk.location,
-      user: chk.operator || chk.user || 'Storekeeper',
-      team: chk.team,
-      itemsSummary,
-      totalQuantity: totalDet,
-      result:
-        chk.discrepancyCount === 0
-          ? '100% Matched'
-          : `${chk.discrepancyCount} Discrepanc${chk.discrepancyCount === 1 ? 'y' : 'ies'}`,
-      isDiscrepancy: chk.discrepancyCount > 0,
-    });
-  });
-
   // Filter logs
   const filteredLogs = unifiedLogs.filter((entry) => {
-    if (filterType !== 'ALL' && entry.type !== filterType) return false;
+    if (filterType !== 'ALL' && entry.result !== filterType) return false;
     if (selectedLocation !== 'ALL' && entry.location !== selectedLocation) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -128,7 +97,7 @@ export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
-          {/* Scan Type Filter */}
+          {/* Status Filter */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg text-xs">
             <button
               onClick={() => setFilterType('ALL')}
@@ -138,29 +107,29 @@ export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              All Logs
+              All Scans
             </button>
             <button
-              onClick={() => setFilterType('YOLO_SCAN')}
+              onClick={() => setFilterType('Confirmed')}
               className={`px-2.5 py-1 rounded font-medium transition-all flex items-center gap-1 cursor-pointer ${
-                filterType === 'YOLO_SCAN'
-                  ? 'bg-white text-slate-900 shadow-2xs font-semibold'
+                filterType === 'Confirmed'
+                  ? 'bg-white text-emerald-800 shadow-2xs font-semibold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              <Scan className="w-3 h-3 text-[#005f60]" />
-              YOLO Scans
+              <CheckCircle className="w-3 h-3 text-emerald-600" />
+              Confirmed
             </button>
             <button
-              onClick={() => setFilterType('STOCK_CHECK')}
+              onClick={() => setFilterType('Discrepancy Flagged')}
               className={`px-2.5 py-1 rounded font-medium transition-all flex items-center gap-1 cursor-pointer ${
-                filterType === 'STOCK_CHECK'
-                  ? 'bg-white text-slate-900 shadow-2xs font-semibold'
+                filterType === 'Discrepancy Flagged'
+                  ? 'bg-white text-rose-800 shadow-2xs font-semibold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              <ClipboardCheck className="w-3 h-3 text-[#005f60]" />
-              Stock Checks
+              <AlertTriangle className="w-3 h-3 text-rose-600" />
+              Flagged
             </button>
           </div>
 
@@ -187,7 +156,7 @@ export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
             <thead className="bg-slate-100/90 border-b-2 border-slate-200 text-slate-700 font-bold select-none">
               <tr>
                 <th className="px-3.5 py-2.5 border-r border-slate-200/80">Date & Time</th>
-                <th className="px-3.5 py-2.5 border-r border-slate-200/80">Type</th>
+                <th className="px-3.5 py-2.5 border-r border-slate-200/80">Activity</th>
                 <th className="px-3.5 py-2.5 border-r border-slate-200/80">Location</th>
                 <th className="px-3.5 py-2.5 border-r border-slate-200/80">User / Operator</th>
                 <th className="px-3.5 py-2.5 border-r border-slate-200/80">Team</th>
@@ -203,24 +172,9 @@ export const ActivityHistoryPage: React.FC<ActivityHistoryPageProps> = ({
                     {entry.date} <span className="text-slate-400 font-normal">{entry.time}</span>
                   </td>
                   <td className="px-3.5 py-2.5">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 w-max border ${
-                        entry.type === 'YOLO_SCAN'
-                          ? 'bg-teal-50 text-teal-800 border-teal-200'
-                          : 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                      }`}
-                    >
-                      {entry.type === 'YOLO_SCAN' ? (
-                        <>
-                          <Scan className="w-2.5 h-2.5" />
-                          YOLO Scan
-                        </>
-                      ) : (
-                        <>
-                          <ClipboardCheck className="w-2.5 h-2.5" />
-                          Stock Check
-                        </>
-                      )}
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 w-max border bg-teal-50 text-teal-800 border-teal-200">
+                      <Scan className="w-2.5 h-2.5" />
+                      YOLO Scan
                     </span>
                   </td>
                   <td className="px-3.5 py-2.5 text-slate-700 font-medium">

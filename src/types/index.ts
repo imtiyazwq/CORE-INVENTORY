@@ -93,30 +93,6 @@ export interface ScanRecord {
   notes?: string;
 }
 
-export interface StockCheckItem {
-  name: string;
-  category: string;
-  expected: number;
-  detected: number;
-  difference: number;
-  variance?: number;
-  status: 'Matched' | 'Short' | 'Extra' | 'Surplus' | 'Deficit';
-}
-
-export interface StockCheckRecord {
-  id: string;
-  timestamp: string;
-  location: ValidLocation;
-  operator: string;
-  team?: string;
-  items: StockCheckItem[];
-  matchedCount: number;
-  discrepancyCount: number;
-  confirmedAt?: string;
-  notes?: string;
-  appliedToInventory?: boolean;
-}
-
 export interface AuditAdjustmentRecord {
   id: string;
   timestamp: string;
@@ -157,7 +133,7 @@ export interface ModelConfig {
 export interface OfflineMutation {
   id: string;
   timestamp: string;
-  action: 'UPDATE_ITEM' | 'CHECKOUT' | 'CHECKIN' | 'CONFIRM_SCAN' | 'STOCK_CHECK';
+  action: 'UPDATE_ITEM' | 'CHECKOUT' | 'CHECKIN' | 'CONFIRM_SCAN';
   payload: any;
   synced: boolean;
 }
@@ -223,7 +199,6 @@ export interface StorageLedger {
   lastUpdated: string;
   items: InventoryItem[];
   scanHistory: ScanRecord[];
-  stockChecks: StockCheckRecord[];
   modelConfig: ModelConfig;
   pendingMutations: OfflineMutation[];
 }

@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Boxes,
   ScanLine,
-  ClipboardCheck,
   History,
   Settings,
   Database,
@@ -16,7 +15,6 @@ export type PageId =
   | 'dashboard'
   | 'inventory'
   | 'scan'
-  | 'stock-check'
   | 'history'
   | 'settings';
 
@@ -44,7 +42,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'scan', label: 'Scan Inventory', icon: ScanLine },
     { id: 'inventory', label: 'Inventory', icon: Boxes, badge: totalAssetsCount },
-    { id: 'stock-check', label: 'Stock Check', icon: ClipboardCheck },
     { id: 'history', label: 'Activity / History', icon: History },
     { id: 'settings', label: 'Settings', icon: Settings, badge: pendingCount > 0 ? `${pendingCount} queue` : undefined },
   ];
@@ -83,7 +80,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </h1>
           <p className="text-[10px] text-teal-400 mt-1 font-mono flex items-center gap-1.5 font-medium">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-teal-400"></span>
-            YOLO TFLite v8
+            Inventory Management System
           </p>
         </div>
       </div>

@@ -17,7 +17,6 @@ const PAGE_TITLES: Record<PageId, string> = {
   dashboard: 'Dashboard',
   scan: 'Scan Inventory',
   inventory: 'Inventory',
-  'stock-check': 'Stock Check',
   history: 'History',
   settings: 'Settings',
 };
