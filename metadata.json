@@ -1,6 +1,6 @@
 {
-  "name": "CORE INVENTORY",
-  "description": "Professional inventory management system with YOLO TFLite object detection, robust image decoding, stock check, and offline-first capabilities.",
+  "name": "Inventory Management",
+  "description": "AI-powered inventory management and tracking system with YOLO TFLite object detection, robust image decoding, and offline sync.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

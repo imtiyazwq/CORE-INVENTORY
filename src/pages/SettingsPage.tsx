@@ -1,6 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
-  Sliders,
   Cpu,
   Wifi,
   WifiOff,
@@ -18,41 +17,58 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { ModelConfig, YOLOClassLabel, EngineMode } from '../types';
-import { PREDEFINED_YOLO_CATEGORIES, modelService } from '../services/modelService';
+import { PREDEFINED_YOLO_CATEGORIES, modelService, DEFAULT_YOLO_LABELS } from '../services/modelService';
+import { storageService } from '../services/storageService';
 
 interface SettingsPageProps {
-  modelConfig: ModelConfig;
-  onUpdateModelConfig: (config: Partial<ModelConfig>) => void;
-  isOnline: boolean;
-  simulatedOffline: boolean;
-  onToggleSimulateOffline: () => void;
-  pendingCount: number;
-  lastSyncedAt: string;
-  onSyncNow: () => { syncedCount: number; timestamp: string };
-  onExportJSON: () => void;
-  onImportJSON: (jsonString: string) => { success: boolean; itemCount: number; message?: string };
-  onResetFactory: () => void;
+  modelConfig?: ModelConfig;
+  onUpdateModelConfig?: (config: Partial<ModelConfig>) => void;
+  isOnline?: boolean;
+  simulatedOffline?: boolean;
+  onToggleSimulateOffline?: () => void;
+  pendingCount?: number;
+  lastSyncedAt?: string;
+  onSyncNow?: () => { syncedCount: number; timestamp: string };
+  onExportJSON?: () => void;
+  onImportJSON?: (jsonString: string) => { success: boolean; itemCount: number; message?: string };
+  onResetFactory?: () => void;
+  onClearAllData?: () => void;
+  onImportData?: (jsonData: string) => void;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
-  modelConfig,
-  onUpdateModelConfig,
-  isOnline,
-  simulatedOffline,
-  onToggleSimulateOffline,
-  pendingCount,
-  lastSyncedAt,
-  onSyncNow,
-  onExportJSON,
-  onImportJSON,
-  onResetFactory,
+  modelConfig = modelService.getConfig(),
+  onUpdateModelConfig = (cfg) => {
+    modelService.updateConfig(cfg);
+    storageService.updateModelConfig(cfg);
+  },
+  isOnline = true,
+  simulatedOffline = false,
+  onToggleSimulateOffline = () => storageService.toggleSimulatedOffline(),
+  pendingCount = 0,
+  lastSyncedAt = '',
+  onSyncNow = () => storageService.syncQueue(),
+  onExportJSON = () => {
+    const json = storageService.exportJSON();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-ledger-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+  onImportJSON = (jsonString) => storageService.importJSON(jsonString),
+  onResetFactory = () => storageService.resetToFactoryDataset(),
+  onClearAllData,
+  onImportData,
 }) => {
+  const activeModelConfig = modelConfig || modelService.getConfig();
   // Local state for model config fields
-  const [modelPath, setModelPath] = useState(modelConfig.modelPath);
-  const [engineMode, setEngineMode] = useState<EngineMode>(modelConfig.engineMode);
-  const [threshold, setThreshold] = useState(modelConfig.confidenceThreshold);
+  const [modelPath, setModelPath] = useState(activeModelConfig.modelPath);
+  const [engineMode, setEngineMode] = useState<EngineMode>(activeModelConfig.engineMode || 'Real TFLite Model Mode');
   const [classes, setClasses] = useState<YOLOClassLabel[]>(
-    modelConfig.labels || []
+    activeModelConfig.labels || activeModelConfig.classes || []
   );
 
   // New class input
@@ -70,7 +86,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     onUpdateModelConfig({
       modelPath: modelPath.trim() || '/models/inventory_yolo.tflite',
       engineMode,
-      confidenceThreshold: threshold,
       labels: classes,
       classes,
     });
@@ -84,12 +99,26 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     const cleanLabel = newLabel.trim();
     if (!cleanLabel) return;
 
+    const existingClass = classes.find((cls) => cls.label.toLowerCase() === cleanLabel.toLowerCase());
+    if (existingClass) {
+      const updated = classes.map((cls) =>
+        cls.index === existingClass.index ? { ...cls, category: newCategory, enabled: true } : cls
+      );
+      setClasses(updated);
+      onUpdateModelConfig({ labels: updated, classes: updated });
+      setNewLabel('');
+      setSaveStatus(`Updated existing class label "${existingClass.label}".`);
+      setTimeout(() => setSaveStatus(null), 3000);
+      return;
+    }
+
     const newIdx = classes.length > 0 ? Math.max(...classes.map((c) => c.index)) + 1 : 0;
     const newClassItem: YOLOClassLabel = {
       id: `lbl-${Date.now()}`,
       index: newIdx,
       label: cleanLabel,
       category: newCategory,
+      enabled: true,
     };
 
     const updated = [...classes, newClassItem];
@@ -104,6 +133,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setClasses(updated);
     onUpdateModelConfig({ labels: updated, classes: updated });
   };
+
+  // Reset to the official 15 dataset classes
+  const handleResetToDatasetClasses = () => {
+    setClasses(DEFAULT_YOLO_LABELS);
+    onUpdateModelConfig({ labels: DEFAULT_YOLO_LABELS, classes: DEFAULT_YOLO_LABELS });
+    setSaveStatus('Restored official 15 dataset classes.');
+    setTimeout(() => setSaveStatus(null), 3500);
+  };
+
+  // Sync state if config changes externally
+  useEffect(() => {
+    if (activeModelConfig?.labels && activeModelConfig.labels.length > 0) {
+      setClasses(activeModelConfig.labels);
+    }
+  }, [activeModelConfig?.labels]);
 
   // Force Sync
   const handleForceSync = () => {
@@ -140,27 +184,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     if (importFileRef.current) importFileRef.current.value = '';
   };
 
-  // Helper badge styling for the 5 categories
-  const getCategoryBadgeClass = (cat: string) => {
-    switch (cat) {
-      case 'Craft Materials STEM Kits':
-        return 'bg-amber-50 text-amber-800 border-amber-200';
-      case 'Electronics Robotics':
-        return 'bg-teal-50 text-teal-800 border-teal-200';
-      case 'Laboratory Science Supplies':
-        return 'bg-emerald-50 text-emerald-800 border-emerald-200';
-      case 'Stationery Office Supplies':
-        return 'bg-blue-50 text-blue-800 border-blue-200';
-      case 'Tools Equipment':
-        return 'bg-purple-50 text-purple-800 border-purple-200';
-      default:
-        return 'bg-slate-100 text-slate-700 border-slate-200';
-    }
-  };
 
   return (
     <div className="pb-16 space-y-6">
-      {/* 2-Column Responsive Layout: Left (YOLO Model Config only) / Right (Backup, Offline, Threshold) */}
+      {/* 2-Column Responsive Layout: YOLO configuration on the left; backup/offline controls on the right */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* ============================================================ */}
         {/* LEFT COLUMN: 75% (8-9 Cols) - YOLO MODEL CONFIGURATION ONLY   */}
@@ -283,16 +310,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             <div className="pt-4 border-t border-slate-100 space-y-3">
               {/* Header Bar with Count + Add Form */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                    YOLO LABELS ({classes.length} CLASSES MAPPED)
-                  </h4>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    Must match model training output tensor order
-                  </p>
+                <div className="flex items-center gap-3">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                      YOLO LABELS ({classes.length} CLASSES MAPPED)
+                    </h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Only trained classes listed here are accepted by YOLO scans
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetToDatasetClasses}
+                    className="text-[11px] font-semibold text-[#005f60] hover:text-[#004d4e] flex items-center gap-1 px-2.5 py-1 rounded-md bg-teal-50 border border-teal-200 hover:bg-teal-100 transition-colors cursor-pointer shrink-0"
+                    title="Reset to official 15 dataset classes"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Reset 15 Classes
+                  </button>
                 </div>
 
-                {/* Add New Class Label Form */}
+                {/* Add / Enable Class Label */}
                 <form onSubmit={handleAddClass} className="flex flex-wrap items-center gap-2">
                   <input
                     type="text"
@@ -338,6 +376,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           Class Label
                         </th>
                         <th className="px-3.5 py-2.5 border-r border-slate-200/80 uppercase text-[11px]">
+                          Display Name
+                        </th>
+                        <th className="px-3.5 py-2.5 border-r border-slate-200/80 uppercase text-[11px]">
                           Category Tag
                         </th>
                         <th className="px-3 py-2.5 text-right w-16 uppercase text-[11px]">
@@ -348,7 +389,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <tbody className="divide-y divide-slate-100 bg-white">
                       {classes.length === 0 ? (
                         <tr>
-                          <td colSpan={4} className="py-8 text-center text-slate-400">
+                          <td colSpan={5} className="py-8 text-center text-slate-400">
                             No class labels configured yet. Add one above.
                           </td>
                         </tr>
@@ -366,14 +407,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                             <td className="px-3.5 py-2 font-bold text-slate-900 font-mono text-xs">
                               {cls.label}
                             </td>
-                            <td className="px-3.5 py-2">
-                              <span
-                                className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${getCategoryBadgeClass(
-                                  cls.category
-                                )}`}
-                              >
-                                {cls.category}
-                              </span>
+                            <td className="px-3.5 py-2 font-semibold text-slate-700">
+                              {cls.displayName || cls.label.replace(/_/g, ' ')}
+                            </td>
+                            <td className="px-3.5 py-2 text-[11px] font-medium text-slate-700">
+                              {cls.category}
                             </td>
                             <td className="px-3 py-2 text-right">
                               <button
@@ -589,51 +627,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 )}
               </button>
             </div>
-          </div>
-
-          {/* Card 3: Confidence Threshold */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-md bg-teal-50 text-[#005f60] border border-teal-200 flex items-center justify-center">
-                  <Sliders className="w-3.5 h-3.5" />
-                </div>
-                <h3 className="text-sm font-bold text-slate-900">Confidence Threshold</h3>
-              </div>
-              <span className="font-mono text-xs font-bold text-[#005f60] bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
-                {(threshold * 100).toFixed(0)}%
-              </span>
-            </div>
-
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              Minimum probability required for YOLO object bounding boxes to be detected and counted. Higher values reduce false positives (precision) while lower values capture faint objects (recall).
-            </p>
-
-            <div className="space-y-2">
-              <input
-                type="range"
-                min={0.1}
-                max={0.95}
-                step={0.05}
-                value={threshold}
-                onChange={(e) => setThreshold(parseFloat(e.target.value))}
-                className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#005f60]"
-              />
-              <div className="flex justify-between text-[10px] font-mono text-slate-400">
-                <span>0.10 (High Recall)</span>
-                <span>0.50</span>
-                <span>0.95 (High Precision)</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleSaveModelConfig}
-              className="w-full py-1.5 px-3 text-xs font-bold text-[#005f60] bg-teal-50 hover:bg-teal-100/80 border border-teal-200 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <CheckCircle className="w-3.5 h-3.5" />
-              Apply Threshold
-            </button>
           </div>
         </div>
       </div>

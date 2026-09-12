@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DetectedObject } from '../types';
+import { getYOLODisplayName } from '../services/yoloConfig';
 
 interface BoundingBoxOverlayProps {
   objects: DetectedObject[];
@@ -129,7 +130,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             <div
               className={`absolute top-0 left-0 -translate-y-full ${badgeColors[colorScheme]} text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-t flex items-center gap-1 shadow-xs whitespace-nowrap`}
             >
-              <span>{obj.className}</span>
+              <span>{getYOLODisplayName(obj.className)}</span>
               <span className="opacity-90">{(obj.confidence * 100).toFixed(0)}%</span>
             </div>
           </div>

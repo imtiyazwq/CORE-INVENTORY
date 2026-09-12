@@ -25,9 +25,10 @@ import {
   PipelineDiagnostics,
 } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
+import { REAL_INVENTORY_DATASET } from '../data/realInventoryData';
 import { decodeImageFile, DecodedImageResult } from '../services/imageDecoder';
 import { modelService, runDetection, DEFAULT_YOLO_LABELS } from '../services/modelService';
-import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
+import { mapYOLODetection, mergeMappedYOLOItems } from '../services/yoloInventoryMapper';
 import { BoundingBoxOverlay } from '../components/BoundingBoxOverlay';
 
 interface ScanInventoryPageProps {
@@ -53,6 +54,16 @@ interface ConfirmedItemRow {
   isManual?: boolean;
 }
 
+const getRackShelfOptionsForLocation = (location: ValidLocation): string[] =>
+  Array.from(
+    new Set(
+      REAL_INVENTORY_DATASET
+        .filter((item) => item.location === location)
+        .map((item) => item.rackShelf?.trim())
+        .filter((rack): rack is string => Boolean(rack))
+    )
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
 export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
   onScanConfirmed,
   defaultLocation = VALID_LOCATIONS[0],
@@ -64,7 +75,17 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
 
   // 2. Location & Rack/Shelf Controls
   const [selectedLocation, setSelectedLocation] = useState<ValidLocation>(defaultLocation);
-  const [rackShelf, setRackShelf] = useState<string>('Rack 1 - Shelf A');
+  const [rackShelf, setRackShelf] = useState<string>(() =>
+    getRackShelfOptionsForLocation(defaultLocation)[0] || ''
+  );
+  const rackShelfOptions = getRackShelfOptionsForLocation(selectedLocation);
+
+  useEffect(() => {
+    setRackShelf((currentRack) => {
+      if (rackShelfOptions.includes(currentRack)) return currentRack;
+      return rackShelfOptions[0] || '';
+    });
+  }, [selectedLocation]);
 
   // 3. Model Configuration & Diagnostics
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
@@ -110,6 +131,13 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastFpsTimeRef = useRef<number>(performance.now());
   const frameCountRef = useRef<number>(0);
+
+  const isConfiguredYOLOClass = (className: string) => {
+    const normalized = className.trim().toLowerCase().replace(/\s+/g, '_');
+    return (modelConfig.labels || DEFAULT_YOLO_LABELS).some(
+      (label) => label.label.trim().toLowerCase().replace(/\s+/g, '_') === normalized
+    );
+  };
 
   // Pre-load the real TFLite model on mount
   useEffect(() => {
@@ -255,36 +283,43 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
         isWebcamBusyRef.current = true;
         try {
           const result = await runDetection(videoRef.current);
-          setWebcamDetectedObjects(result.objects);
+          setWebcamDetectedObjects(result.objects.filter((object) => isConfiguredYOLOClass(object.className)));
           setWebcamInferenceTime(result.diagnostics.totalTimeMs);
           setDiagnostics(result.diagnostics);
 
-          // Update confirmation items strictly from post-NMS summary
-          if (result.summary.length > 0) {
-            setConfirmedItems((prev) => {
-              const manualItems = prev.filter((it) => it.isManual);
-              const detectedMap = new Map<string, ConfirmedItemRow>();
+          // Use the same YOLO -> inventory mapping for webcam and uploaded images.
+          // Settings is the allow-list, and package classes such as bag_arduino_20
+          // are converted to their real inventory quantities before confirmation.
+          const mapped = result.summary
+            .map((item) =>
+              mapYOLODetection(
+                item.className,
+                item.count,
+                item.averageConfidence,
+                modelConfig.labels || DEFAULT_YOLO_LABELS
+              )
+            )
+            .filter((item): item is NonNullable<typeof item> => item !== null);
 
-              result.summary.forEach((item) => {
-                const labelMeta = DEFAULT_YOLO_LABELS.find((l) => l.label === item.className);
-                detectedMap.set(item.className, {
-                  className: item.className,
-                  category: labelMeta?.category || 'General Equipment',
-                  quantity: item.count,
-                  confidence: item.averageConfidence,
-                  isManual: false,
-                });
-              });
+          const merged = mergeMappedYOLOItems(mapped);
+          setConfirmedItems((prev) => {
+            const manualItems = prev.filter((it) => it.isManual);
+            const detectedRows: ConfirmedItemRow[] = merged.map((item) => ({
+              className: item.inventoryName,
+              category: item.category,
+              quantity: item.quantity,
+              confidence: item.confidence,
+              isManual: false,
+            }));
 
-              manualItems.forEach((m) => {
-                if (!detectedMap.has(m.className)) {
-                  detectedMap.set(m.className, m);
-                }
-              });
+            for (const manual of manualItems) {
+              if (!detectedRows.some((row) => row.className === manual.className)) {
+                detectedRows.push(manual);
+              }
+            }
 
-              return Array.from(detectedMap.values());
-            });
-          }
+            return detectedRows;
+          });
         } catch (err: any) {
           console.warn('[Webcam] Inference iteration note:', err.message);
         } finally {
@@ -348,23 +383,26 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
     setModelError(null);
     try {
       const result = await runDetection(canvas);
-      setUploadDetectedObjects(result.objects);
+      setUploadDetectedObjects(result.objects.filter((object) => isConfiguredYOLOClass(object.className)));
       setUploadInferenceTime(result.diagnostics.totalTimeMs);
       setDiagnostics(result.diagnostics);
 
-      // Populate confirmation items strictly from post-NMS results
-      const newItems: ConfirmedItemRow[] = result.summary.map((item) => {
-        const labelMeta = DEFAULT_YOLO_LABELS.find((l) => l.label === item.className);
-        return {
-          className: item.className,
-          category: labelMeta?.category || 'General Equipment',
-          quantity: item.count,
-          confidence: item.averageConfidence,
-          isManual: false,
-        };
-      });
+      // Convert raw YOLO detections into the inventory units defined for each class.
+      // Disabled classes are ignored. Unknown classes are never accepted into the scan.
+      const mapped = result.summary
+        .map((item) => mapYOLODetection(item.className, item.count, item.averageConfidence, modelConfig.labels || DEFAULT_YOLO_LABELS))
+        .filter((item): item is NonNullable<typeof item> => item !== null);
 
-      setConfirmedItems(newItems);
+      const merged = mergeMappedYOLOItems(mapped);
+      setConfirmedItems(
+        merged.map((item) => ({
+          className: item.inventoryName,
+          category: item.category,
+          quantity: item.quantity,
+          confidence: item.confidence,
+          isManual: false,
+        }))
+      );
     } catch (err: any) {
       console.error('[Upload] Model Evaluation Error:', err);
       setModelError(err.message || 'Unable to evaluate TFLite model.');
@@ -396,7 +434,9 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
     if (existing) {
       handleQuantityChange(manualSelectClass, 1);
     } else {
-      const labelMeta = DEFAULT_YOLO_LABELS.find((l) => l.label === manualSelectClass);
+      const labelMeta = DEFAULT_YOLO_LABELS.find(
+        (l) => l.label === manualSelectClass || l.label.replace(/_/g, ' ') === manualSelectClass.replace(/_/g, ' ')
+      );
       setConfirmedItems((prev) => [
         ...prev,
         {
@@ -431,7 +471,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
     });
 
     setConfirmSuccessMessage(
-      `Successfully logged ${totalConfirmedUnits} units across ${confirmedItems.length} items to ${selectedLocation} (${rackShelf})!`
+      `Scan saved for Stock Check: ${totalConfirmedUnits} units across ${confirmedItems.length} items at ${selectedLocation} (${rackShelf}).`
     );
 
     setTimeout(() => {
@@ -564,19 +604,31 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
             </div>
           </div>
 
-          {/* Rack/Shelf Input */}
+          {/* Specific Location / Rack Dropdown (from the Excel dataset) */}
           <div className="flex items-center gap-1.5">
-            <label htmlFor="scan-rackshelf-input" className="text-slate-600 font-medium">
-              Rack/Shelf:
+            <label htmlFor="scan-rackshelf-select" className="text-slate-600 font-medium">
+              Specific Location / Rack:
             </label>
-            <input
-              id="scan-rackshelf-input"
-              type="text"
-              value={rackShelf}
-              onChange={(e) => setRackShelf(e.target.value)}
-              placeholder="Rack 1 - Shelf A"
-              className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#005f60] shadow-2xs w-36"
-            />
+            <div className="relative">
+              <select
+                id="scan-rackshelf-select"
+                value={rackShelf}
+                onChange={(e) => setRackShelf(e.target.value)}
+                disabled={rackShelfOptions.length === 0}
+                className="text-xs font-medium px-2.5 py-1.5 pr-7 rounded-lg border border-slate-200 bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#005f60] appearance-none shadow-2xs cursor-pointer disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 min-w-[180px]"
+              >
+                {rackShelfOptions.length === 0 ? (
+                  <option value="">No rack data</option>
+                ) : (
+                  rackShelfOptions.map((rack) => (
+                    <option key={rack} value={rack}>
+                      {rack}
+                    </option>
+                  ))
+                )}
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-2 pointer-events-none" />
+            </div>
           </div>
 
           {/* Confidence Threshold Selector */}
@@ -1009,7 +1061,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
                       onChange={(e) => setManualSelectClass(e.target.value)}
                       className="flex-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-800 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-[#005f60]"
                     >
-                      {DEFAULT_YOLO_LABELS.map((lbl) => (
+                      {(modelConfig.labels || DEFAULT_YOLO_LABELS).map((lbl) => (
                         <option key={lbl.id} value={lbl.label}>
                           {lbl.label} ({lbl.category})
                         </option>
@@ -1072,14 +1124,6 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
           </div>
         </div>
       </div>
-
-      {/* ========================================================================= */}
-      {/* 3. TEMPORARY YOLO TFLITE DIAGNOSTICS PANEL (Dynamic shapes, NMS, Latency) */}
-      {/* ========================================================================= */}
-      <DiagnosticsPanel
-        diagnostics={diagnostics}
-        isProcessing={isProcessingModel}
-      />
     </div>
   );
 };

@@ -5,7 +5,7 @@ import {
   PipelineDiagnostics,
   YOLOClassLabel,
 } from '../types';
-import { MODEL_CONFIG, YOLO_CLASSES, YOLO_CLASS_CATEGORIES } from './yoloConfig';
+import { MODEL_CONFIG, YOLO_CLASSES, YOLO_CLASS_CATEGORIES, YOLO_CLASS_DEFINITIONS } from './yoloConfig';
 import { preprocessImageToNCHW, LetterboxInfo } from './imagePreprocessor';
 import { TFLiteModelLoader, LoadedTFLiteModel } from './tfliteModelLoader';
 import { runTFLiteInference } from './tfliteInference';
@@ -40,11 +40,14 @@ export const PREDEFINED_YOLO_CATEGORIES = [
  * Class index 13 -> sticky note paper
  * Class index 14 -> tongue_depressor
  */
-export const DEFAULT_YOLO_LABELS: YOLOClassLabel[] = YOLO_CLASSES.map((label, index) => ({
-  id: `lbl-${index}`,
-  index,
-  label,
-  category: YOLO_CLASS_CATEGORIES[label] || 'Electronics & Robotics',
+export const DEFAULT_YOLO_LABELS: YOLOClassLabel[] = YOLO_CLASS_DEFINITIONS.map((definition) => ({
+  id: `lbl-${YOLO_CLASSES.indexOf(definition.label)}`,
+  index: YOLO_CLASSES.indexOf(definition.label),
+  label: definition.label,
+  displayName: definition.displayName,
+  category: definition.category,
+  quantityPerDetection: definition.quantityPerDetection,
+  enabled: definition.enabledByDefault,
 }));
 
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {

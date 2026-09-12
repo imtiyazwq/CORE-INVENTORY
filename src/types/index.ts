@@ -1,10 +1,20 @@
-export type ValidLocation =
-  | 'Store_1_Store Level 4'
-  | 'Store_2_Edustore'
-  | 'Store_3_Chemical room'
-  | 'Store_4_store concourse';
+import { VALID_LOCATIONS } from '../data/locations';
 
-export type AssetType = 'Non-Consumable' | 'Consumable';
+export type ValidLocation = (typeof VALID_LOCATIONS)[number];
+
+export type AssetType = 'Consumable' | 'Controllable Asset' | 'Non-Consumable';
+
+export type ItemCategory =
+  | 'IT Equipment'
+  | 'Laboratory & Chemical'
+  | 'Safety & Protective Equipment'
+  | 'Office Supplies'
+  | 'Craft Materials STEM Kits'
+  | 'Electronics Robotics'
+  | 'Laboratory Science Supplies'
+  | 'Stationery Office Supplies'
+  | 'Tools Equipment'
+  | string;
 
 export type ItemStatus =
   | 'Available'
@@ -13,23 +23,8 @@ export type ItemStatus =
   | 'Lost'
   | 'Damaged'
   | 'Under Maintenance'
-  | 'Disposed';
-
-export type ItemCategory =
-  | 'IT Equipment'
-  | 'Office Supplies'
-  | 'Laboratory & Chemical'
-  | 'Storage & Facility'
-  | 'Safety & Protective Equipment';
-
-export interface UserAccount {
-  id: string;
-  userId: string;
-  userName: string;
-  teamName: string;
-  role?: string;
-  createdAt: string;
-}
+  | 'Disposed'
+  | 'Low Stock';
 
 export interface InventoryItem {
   id: string;
@@ -48,15 +43,19 @@ export interface InventoryItem {
   team?: string;
   checkedOutAt?: string;
   lastSeen: string;
-  lastStocktakeDate?: string;
+  unit?: string;
+  itemsOutDate?: string;
+  itemsInDate?: string;
+  qtyReturn?: number;
   remarks?: string;
+  imageReference?: string;
 }
 
 export interface BoundingBox {
-  x: number;      // normalized 0..1 (left)
-  y: number;      // normalized 0..1 (top)
-  width: number;  // normalized 0..1
-  height: number; // normalized 0..1
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface DetectedObject {
@@ -71,119 +70,47 @@ export interface DetectedSummaryItem {
   className: string;
   count: number;
   averageConfidence: number;
-  matchedInventoryId?: string;
-}
-
-export interface ScanRecord {
-  id: string;
-  timestamp: string;
-  type: 'webcam' | 'upload';
-  location: ValidLocation;
-  user: string;
-  team?: string;
-  itemsDetected: Array<{
-    className: string;
-    quantity: number;
-    confidence: number;
-  }>;
-  totalQuantity: number;
-  status: 'Completed' | 'Confirmed' | 'Discrepancy Flagged';
-  rawImagePreview?: string;
-  previewUrl?: string;
-  notes?: string;
-}
-
-export interface AuditAdjustmentRecord {
-  id: string;
-  timestamp: string;
-  location: ValidLocation;
-  scanId?: string;
-  itemName: string;
-  previousQuantity: number;
-  detectedQuantity: number;
-  confirmedQuantity: number;
-  variance: number;
-  updatedBy: string;
-  team: string;
-  notes?: string;
-}
-
-export interface YOLOClassLabel {
-  id?: string;
-  index: number;
-  label: string;
-  category: string;
-}
-
-export type YOLOClassMapping = YOLOClassLabel;
-
-export type ModelEngineMode = 'Real TFLite Model Mode' | 'Demo Simulation Mode';
-export type EngineMode = ModelEngineMode;
-
-export interface ModelConfig {
-  modelPath: string;
-  engineMode: ModelEngineMode;
-  confidenceThreshold: number;
-  inputResolution: number; // e.g. 640
-  nmsThreshold: number;
-  labels: YOLOClassLabel[];
-  classes?: YOLOClassLabel[];
-}
-
-export interface OfflineMutation {
-  id: string;
-  timestamp: string;
-  action: 'UPDATE_ITEM' | 'CHECKOUT' | 'CHECKIN' | 'CONFIRM_SCAN';
-  payload: any;
-  synced: boolean;
-}
-
-export interface TensorDetails {
-  name: string;
-  shape: number[];
-  dataType: string;
-  layout?: 'NCHW' | 'NHWC';
-  quantization?: {
-    scale?: number;
-    zeroPoint?: number;
-  };
 }
 
 export interface PipelineDiagnostics {
-  runtimeStatus: string;
-  modelStatus: string;
   modelName: string;
   modelPath: string;
   modelFileSize: number;
+  modelStatus?: string;
+  runtimeStatus?: string;
   inputShape: number[];
+  inputLayout: string;
   inputDataType: string;
-  inputLayout: 'NCHW' | 'NHWC';
   outputShape: number[];
   outputDataType: string;
   rawOutputLength?: number;
-  quantization?: {
-    scale?: number;
-    zeroPoint?: number;
-  };
   rawPredictionsCount: number;
+  confidenceThreshold: number;
   aboveThresholdCount: number;
   afterNmsCount: number;
   suppressedCount: number;
-  finalObjectCount: Record<string, number>;
-  confidenceThreshold: number;
-  nmsThreshold: number;
-  inferenceTimeMs: number;
+  finalObjectCount?: Record<string, number>;
   preprocessTimeMs: number;
+  inferenceTimeMs: number;
   nmsTimeMs: number;
   totalTimeMs: number;
-  errorMessage?: string | null;
+  nmsThreshold: number;
   timestamp: string;
-
-  // Extended diagnostic metrics
+  errorMessage?: string | null;
+  // Extended runtime diagnostics emitted by modelService.
   modelLoaded?: boolean;
   fileSizeBytes?: number;
-  inputTensorDetails?: TensorDetails;
-  outputTensorDetails?: TensorDetails;
+  inputTensorDetails?: {
+    name: string;
+    shape: readonly number[];
+    dataType: string;
+    layout: string;
+  };
+  outputTensorDetails?: {
+    name: string;
+    shape: readonly number[];
+    dataType: string;
+  };
   totalAnchorsEvaluated?: number;
   rawCandidatesAboveThreshold?: number;
   finalDetectionsAfterNMS?: number;
@@ -194,11 +121,78 @@ export interface PipelineDiagnostics {
   executionBackend?: string;
 }
 
-export interface StorageLedger {
-  version: string;
-  lastUpdated: string;
-  items: InventoryItem[];
-  scanHistory: ScanRecord[];
-  modelConfig: ModelConfig;
-  pendingMutations: OfflineMutation[];
+export interface ScanRecord {
+  id: string;
+  type: 'webcam' | 'upload';
+  location: ValidLocation;
+  user: string;
+  team?: string;
+  itemsDetected: Array<{ className: string; quantity: number; confidence: number }>;
+  totalQuantity: number;
+  status: 'Confirmed' | 'Discrepancy Flagged' | 'Pending Review';
+  timestamp: string;
+  notes?: string;
+  previewUrl?: string;
+}
+
+export interface StockCheckItem {
+  name: string;
+  category: string;
+  expected: number;
+  detected: number;
+  difference: number;
+  variance: number;
+  status: 'Matched' | 'Short' | 'Extra';
+}
+
+export interface StockCheckRecord {
+  id: string;
+  location: ValidLocation;
+  operator: string;
+  user?: string;
+  team?: string;
+  matchedCount: number;
+  discrepancyCount: number;
+  timestamp: string;
+  confirmedAt: string;
+  notes?: string;
+  items: StockCheckItem[];
+}
+
+export interface UserAccount {
+  userId: string;
+  userName: string;
+  teamName: string;
+}
+
+export interface YOLOClassLabel {
+  id: string;
+  index: number;
+  label: string;
+  category: string;
+  displayName?: string;
+  quantityPerDetection?: number;
+  enabled?: boolean;
+}
+
+export type EngineMode = 'Real TFLite Model Mode' | 'Demo Simulation Mode';
+
+export interface ModelConfig {
+  modelPath: string;
+  engineMode: EngineMode;
+  confidenceThreshold: number;
+  nmsThreshold: number;
+  labels?: YOLOClassLabel[];
+  classes?: YOLOClassLabel[];
+  inputResolution?: number;
+  maxDetections?: number;
+  inputWidth?: number;
+  inputHeight?: number;
+}
+
+export interface OfflineMutation {
+  id: string;
+  action: 'SCAN' | 'CHECKOUT' | 'CHECKIN' | 'STOCK_CHECK' | 'UPDATE_ITEM';
+  timestamp: string;
+  payload: any;
 }

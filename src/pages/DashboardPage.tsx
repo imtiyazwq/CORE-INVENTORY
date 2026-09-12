@@ -12,10 +12,8 @@ import {
   ShieldCheck,
   Camera,
   Upload,
-  Sparkles,
 } from 'lucide-react';
 import { InventoryItem, ScanRecord } from '../types';
-import { VALID_LOCATIONS } from '../data/locations';
 import { StatCard } from '../components/StatCard';
 import { PageId } from '../components/Sidebar';
 
@@ -46,14 +44,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
   // Recent Checked Out non-consumable assets
   const checkedOutAssets = items
-    .filter((it) => it.assetType === 'Non-Consumable' && it.status === 'Checked Out')
+    .filter((it) => it.assetType !== 'Consumable' && it.status === 'Checked Out')
     .slice(0, 5);
 
   return (
     <div className="space-y-6 pb-12">
-      {/* ========================================================================= */}
-      {/* 1. COMPACT SCAN INVENTORY SHORTCUT ACTION BAR                              */}
-      {/* ========================================================================= */}
+      {/* 1. COMPACT SCAN INVENTORY SHORTCUT ACTION BAR */}
       <div className="bg-[#1e242d] rounded-xl border border-[#323c4a] px-4 py-3.5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-[#005f60] flex items-center justify-center text-white shadow-xs shrink-0 border border-teal-500/30">
@@ -74,9 +70,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </div>
 
-        {/* Compact, responsive action buttons that do not dominate the dashboard */}
+        {/* Action buttons */}
         <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
-          {/* Button 1: Scan with Webcam */}
           <button
             onClick={() => onNavigate('scan', 'webcam')}
             className="flex-1 sm:flex-initial px-3 py-1.5 rounded-lg bg-[#005f60] hover:bg-[#004d4e] text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-colors border border-teal-500/30 cursor-pointer"
@@ -86,7 +81,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <span>Scan Webcam</span>
           </button>
 
-          {/* Button 2: Upload Image */}
           <button
             onClick={() => onNavigate('scan', 'upload')}
             className="flex-1 sm:flex-initial px-3 py-1.5 rounded-lg bg-[#2b3543] hover:bg-[#354152] text-slate-200 hover:text-white border border-[#3e4c5e] text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
@@ -155,7 +149,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         />
       </div>
 
-      {/* Balanced 2-Column Section: Recent YOLO Scans vs Audit Discrepancies */}
+      {/* Balanced 2-Column Section: Recent YOLO Scans vs Stock Alerts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
         {/* Recent YOLO Scan Card */}
         <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs flex flex-col justify-between">
@@ -174,7 +168,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
               <button
                 onClick={() => onNavigate('scan', 'webcam')}
-                className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1"
+                className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1 cursor-pointer"
               >
                 New Scan
                 <ArrowUpRight className="w-3.5 h-3.5" />
@@ -244,10 +238,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
 
           <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Powered by YOLOv8 TFLite Engine</span>
+            <span>Powered by YOLO TFLite Engine</span>
             <button
               onClick={() => onNavigate('history')}
-              className="text-[#005f60] font-semibold hover:underline text-[11px]"
+              className="text-[#005f60] font-semibold hover:underline text-[11px] cursor-pointer"
             >
               View Full History →
             </button>
@@ -271,7 +265,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
               <button
                 onClick={() => onNavigate('inventory')}
-                className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1"
+                className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1 cursor-pointer"
               >
                 View Inventory
                 <ArrowUpRight className="w-3.5 h-3.5" />
@@ -330,7 +324,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <span>Keep safety buffers to prevent stockouts</span>
             <button
               onClick={() => onNavigate('inventory')}
-              className="text-[#005f60] font-semibold hover:underline text-[11px]"
+              className="text-[#005f60] font-semibold hover:underline text-[11px] cursor-pointer"
             >
               Open Inventory List →
             </button>
@@ -354,7 +348,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
           <button
             onClick={() => onNavigate('inventory')}
-            className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1"
+            className="text-xs font-bold text-[#005f60] hover:underline flex items-center gap-1 cursor-pointer"
           >
             Catalog Table
             <ExternalLink className="w-3.5 h-3.5" />

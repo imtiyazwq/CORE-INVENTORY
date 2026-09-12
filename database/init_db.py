@@ -107,7 +107,11 @@ def _hash_default_password(password: str) -> str:
         import hashlib
         return "sha256$" + hashlib.sha256(password.encode()).hexdigest()
 
-USERS_SEED: list = []
+USERS_SEED = [
+    ("aminah01", _hash_default_password("password123"), "Aminah binti Rosli", "Warehouse Team A"),
+    ("tan_admin", _hash_default_password("admin_pass"), "Tan Wei Ming", "Logistics & Operations"),
+    ("siti_qc", _hash_default_password("qc_pass"), "Siti Nurhaliza", "Quality Assurance"),
+]
 
 CATEGORIES_SEED = [
     ("Electronics & Robotics",),
@@ -137,7 +141,48 @@ STORES_SEED = [
 ]
 
 # Baseline stock per store: (store_id, product_id, initial_quantity)
-INITIAL_INVENTORY_SEED = []
+INITIAL_INVENTORY_SEED = [
+    # Store 1 (Online)
+    (1, 1, 50),
+    (1, 2, 100),
+    (1, 3, 30),
+    (1, 4, 80),
+    (1, 5, 45),
+    (1, 6, 60),
+    (1, 7, 25),
+    (1, 8, 40),
+    (1, 9, 150),
+    # Store 2 (Online)
+    (2, 1, 30),
+    (2, 2, 50),
+    (2, 3, 20),
+    (2, 4, 40),
+    (2, 5, 30),
+    (2, 6, 25),
+    (2, 7, 15),
+    (2, 8, 20),
+    (2, 9, 80),
+    # Store 3 (Offline-capable)
+    (3, 1, 100),
+    (3, 2, 300),
+    (3, 3, 50),
+    (3, 4, 200),
+    (3, 5, 120),
+    (3, 6, 80),
+    (3, 7, 60),
+    (3, 8, 75),
+    (3, 9, 250),
+    # Store 4 (Offline-capable)
+    (4, 1, 20),
+    (4, 2, 60),
+    (4, 3, 15),
+    (4, 4, 30),
+    (4, 5, 25),
+    (4, 6, 20),
+    (4, 7, 10),
+    (4, 8, 15),
+    (4, 9, 50),
+]
 
 
 def get_db_connection(db_path: str = DB_PATH) -> sqlite3.Connection:

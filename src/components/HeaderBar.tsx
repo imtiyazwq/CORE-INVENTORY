@@ -1,5 +1,5 @@
 import React from 'react';
-import { Wifi, WifiOff, RefreshCw, Layers, User, LogOut, ShieldCheck } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, LogOut } from 'lucide-react';
 import { PageId } from './Sidebar';
 import { UserAccount } from '../types';
 
@@ -17,7 +17,8 @@ const PAGE_TITLES: Record<PageId, string> = {
   dashboard: 'Dashboard',
   scan: 'Scan Inventory',
   inventory: 'Inventory',
-  history: 'History',
+  stockcheck: 'Stock Check',
+  history: 'Activity / History',
   settings: 'Settings',
 };
 
@@ -35,7 +36,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   return (
     <header
       id="app-header-bar"
-      className="h-14 px-6 border-b border-slate-200/90 bg-white flex items-center justify-between shrink-0 shadow-2xs"
+      className="h-14 px-4 sm:px-6 border-b border-slate-200/90 bg-white flex items-center justify-between shrink-0 shadow-2xs sticky top-0 z-20"
     >
       <div>
         <h2 className="text-base sm:text-lg font-semibold text-slate-900 tracking-normal">

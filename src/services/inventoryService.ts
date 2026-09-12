@@ -1,57 +1,56 @@
 import { InventoryItem, AssetType, ItemStatus, ValidLocation } from '../types';
 
-export interface InventoryFilterOptions {
-  searchQuery: string;
-  assetType: AssetType | 'ALL';
-  team: string | 'ALL';
-  location: ValidLocation | 'ALL';
-  status: ItemStatus | 'ALL';
-}
-
-export type SortField = 'name' | 'quantity' | 'lastSeen' | 'location' | 'assetType' | 'team';
+export type SortField = 'name' | 'assetType' | 'quantity' | 'location' | 'team' | 'lastSeen';
 export type SortDirection = 'asc' | 'desc';
+
+export interface InventoryFilterOptions {
+  searchQuery?: string;
+  assetType?: AssetType | 'ALL';
+  location?: ValidLocation | 'ALL';
+  status?: ItemStatus | 'ALL';
+  team?: string | 'ALL';
+}
 
 export function filterInventoryItems(
   items: InventoryItem[],
-  filters: InventoryFilterOptions
+  options: InventoryFilterOptions
 ): InventoryItem[] {
   return items.filter((item) => {
-    // Search query matches name, itemCode, specification, rackShelf, or user
-    if (filters.searchQuery.trim()) {
-      const q = filters.searchQuery.toLowerCase().trim();
+    // Search query filter
+    if (options.searchQuery && options.searchQuery.trim()) {
+      const q = options.searchQuery.toLowerCase().trim();
       const match =
         item.name.toLowerCase().includes(q) ||
         item.itemCode.toLowerCase().includes(q) ||
-        item.location.toLowerCase().includes(q) ||
-        item.rackShelf.toLowerCase().includes(q) ||
         (item.specification && item.specification.toLowerCase().includes(q)) ||
         (item.user && item.user.toLowerCase().includes(q)) ||
-        (item.team && item.team.toLowerCase().includes(q));
-
+        (item.team && item.team.toLowerCase().includes(q)) ||
+        item.rackShelf.toLowerCase().includes(q) ||
+        (item.remarks && item.remarks.toLowerCase().includes(q));
       if (!match) return false;
     }
 
-    // Asset type filter
-    if (filters.assetType !== 'ALL' && item.assetType !== filters.assetType) {
-      return false;
+    // Asset Type filter
+    if (options.assetType && options.assetType !== 'ALL') {
+      if (item.assetType !== options.assetType) return false;
     }
 
     // Location filter
-    if (filters.location !== 'ALL' && item.location !== filters.location) {
-      return false;
+    if (options.location && options.location !== 'ALL') {
+      if (item.location !== options.location) return false;
     }
 
     // Status filter
-    if (filters.status !== 'ALL' && item.status !== filters.status) {
-      return false;
+    if (options.status && options.status !== 'ALL') {
+      if (item.status !== options.status) return false;
     }
 
     // Team filter
-    if (filters.team !== 'ALL') {
-      if (filters.team === 'None') {
-        if (item.team) return false;
-      } else if (item.team !== filters.team) {
-        return false;
+    if (options.team && options.team !== 'ALL') {
+      if (options.team === 'None') {
+        if (item.team && item.team.trim() && item.team !== 'Unassigned') return false;
+      } else {
+        if (item.team !== options.team) return false;
       }
     }
 
@@ -64,38 +63,36 @@ export function sortInventoryItems(
   field: SortField,
   direction: SortDirection
 ): InventoryItem[] {
-  return [...items].sort((a, b) => {
-    let comparison = 0;
-    switch (field) {
-      case 'name':
-        comparison = a.name.localeCompare(b.name);
-        break;
-      case 'quantity':
-        comparison = a.quantity - b.quantity;
-        break;
-      case 'lastSeen':
-        comparison = a.lastSeen.localeCompare(b.lastSeen);
-        break;
-      case 'location':
-        comparison = a.location.localeCompare(b.location);
-        break;
-      case 'assetType':
-        comparison = a.assetType.localeCompare(b.assetType);
-        break;
-      case 'team':
-        comparison = (a.team || '').localeCompare(b.team || '');
-        break;
-      default:
-        comparison = 0;
-    }
+  const sorted = [...items];
+  const mult = direction === 'asc' ? 1 : -1;
 
-    return direction === 'asc' ? comparison : -comparison;
+  sorted.sort((a, b) => {
+    if (field === 'name') {
+      return a.name.localeCompare(b.name) * mult;
+    }
+    if (field === 'assetType') {
+      return a.assetType.localeCompare(b.assetType) * mult;
+    }
+    if (field === 'quantity') {
+      return (a.availableQuantity - b.availableQuantity) * mult;
+    }
+    if (field === 'location') {
+      return a.location.localeCompare(b.location) * mult;
+    }
+    if (field === 'team') {
+      return (a.team || '').localeCompare(b.team || '') * mult;
+    }
+    if (field === 'lastSeen') {
+      return a.lastSeen.localeCompare(b.lastSeen) * mult;
+    }
+    return 0;
   });
+
+  return sorted;
 }
 
 export function exportInventoryToCSV(items: InventoryItem[]): void {
   const headers = [
-    'Item ID',
     'Item Code',
     'Item Name',
     'Category',
@@ -106,49 +103,41 @@ export function exportInventoryToCSV(items: InventoryItem[]): void {
     'Location',
     'Rack / Shelf',
     'Status',
-    'Responsible User',
-    'Team',
-    'Checked Out At',
-    'Last Seen',
-    'Last Stocktake Date',
+    'Assigned User',
+    'Assigned Team',
+    'Checked Out Date',
+    'Last Seen Date',
+    'Specification',
     'Remarks',
   ];
 
   const rows = items.map((item) => [
-    escapeCSV(item.id),
-    escapeCSV(item.itemCode),
-    escapeCSV(item.name),
-    escapeCSV(item.category),
-    escapeCSV(item.subCategory || ''),
-    escapeCSV(item.assetType),
-    item.quantity.toString(),
-    item.availableQuantity.toString(),
-    escapeCSV(item.location),
-    escapeCSV(item.rackShelf),
-    escapeCSV(item.status),
-    escapeCSV(item.user || ''),
-    escapeCSV(item.team || ''),
-    escapeCSV(item.checkedOutAt || ''),
-    escapeCSV(item.lastSeen),
-    escapeCSV(item.lastStocktakeDate || ''),
-    escapeCSV(item.remarks || ''),
+    `"${item.itemCode}"`,
+    `"${item.name.replace(/"/g, '""')}"`,
+    `"${item.category}"`,
+    `"${item.subCategory || ''}"`,
+    `"${item.assetType}"`,
+    item.quantity,
+    item.availableQuantity,
+    `"${item.location}"`,
+    `"${item.rackShelf}"`,
+    `"${item.status}"`,
+    `"${(item.user || '').replace(/"/g, '""')}"`,
+    `"${(item.team || '').replace(/"/g, '""')}"`,
+    `"${item.checkedOutAt || ''}"`,
+    `"${item.lastSeen}"`,
+    `"${(item.specification || '').replace(/"/g, '""')}"`,
+    `"${(item.remarks || '').replace(/"/g, '""')}"`,
   ]);
 
   const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.setAttribute('href', url);
+  link.href = url;
   link.setAttribute('download', `inventory_catalog_${new Date().toISOString().slice(0, 10)}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-}
-
-function escapeCSV(str: string): string {
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
 }

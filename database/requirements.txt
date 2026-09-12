@@ -1,0 +1,6 @@
+Flask==3.1.0
+Werkzeug==3.1.3
+# Render/Linux production dependencies. Local Windows development uses SQLite,
+# so it does not need PostgreSQL, pg_config, psycopg2, or gunicorn.
+gunicorn>=23.0.0; platform_system != "Windows"
+psycopg2-binary>=2.9.10; platform_system != "Windows"

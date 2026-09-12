@@ -47,6 +47,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
       setError('Please enter your User ID.');
       return;
     }
+    if (!password) {
+      setError('Please enter your password.');
+      return;
+    }
 
     setIsLoading(true);
     try {
@@ -249,13 +253,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
                   {isLoading ? 'Verifying...' : 'Login'}
                 </button>
 
-                <div className="text-center pt-1">
-                  <span className="text-[11px] text-slate-500">
+                <div className="text-center pt-2">
+                  <span className="text-[11px] text-slate-500 block">
                     Don't have an account?{' '}
                     <button
                       type="button"
-                      onClick={() => setMode('signup')}
-                      className="text-[#005f60] font-bold hover:underline"
+                      onClick={() => {
+                        setMode('signup');
+                        setError(null);
+                      }}
+                      className="text-[#005f60] font-bold hover:underline cursor-pointer"
                     >
                       Sign Up
                     </button>
@@ -407,8 +414,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
                     Already have an account?{' '}
                     <button
                       type="button"
-                      onClick={() => setMode('login')}
-                      className="text-[#005f60] font-bold hover:underline"
+                      onClick={() => {
+                        setMode('login');
+                        setError(null);
+                      }}
+                      className="text-[#005f60] font-bold hover:underline cursor-pointer"
                     >
                       Sign In
                     </button>
