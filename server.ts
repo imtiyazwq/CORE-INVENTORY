@@ -273,18 +273,29 @@ app.get('/api/detections-log', (req, res) => {
 
 app.get('/api/inventory', (req, res) => {
   try {
-    const inventory = db
-      .prepare(
-        `SELECT si.store_id, s.store_name, p.product_id, p.sku, p.product_name,
-                c.category_name, si.quantity, si.last_synced_at
-         FROM store_inventory si
-         JOIN products p ON si.product_id = p.product_id
-         JOIN categories c ON p.category_id = c.category_id
-         JOIN stores s ON si.store_id = s.store_id
-         ORDER BY si.store_id, p.product_id;`
-      )
-      .all();
-    return res.json({ inventory });
+    const store_name = req.query.store_name as string | undefined;
+    let items;
+    if (store_name) {
+      items = db
+        .prepare(
+          `SELECT p.sku, p.name, p.category, p.asset_type, si.store_name, si.qty, si.avail_qty, si.status, si.last_stocktake
+           FROM products p
+           JOIN store_inventory si ON p.sku = si.sku
+           WHERE si.store_name = ?
+           ORDER BY si.store_name, p.category, p.name;`
+        )
+        .all(store_name);
+    } else {
+      items = db
+        .prepare(
+          `SELECT p.sku, p.name, p.category, p.asset_type, si.store_name, si.qty, si.avail_qty, si.status, si.last_stocktake
+           FROM products p
+           JOIN store_inventory si ON p.sku = si.sku
+           ORDER BY si.store_name, p.category, p.name;`
+        )
+        .all();
+    }
+    return res.json({ items, count: items.length });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

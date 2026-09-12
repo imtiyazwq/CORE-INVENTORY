@@ -1,146 +1,265 @@
 """
 database/app.py
-Flask Application for Multi-Store Inventory System with User & Team Accountability
+Flask Application — CORE-INVENTORY System
+
+Endpoints:
+  POST /api/login                   – authenticate, log LOGIN, return user info
+  POST /api/logout                  – log LOGOUT, clear session
+  GET  /api/me                      – return current session user
+  GET  /api/inventory               – list all inventory (join products + store_inventory)
+  POST /api/inventory/transaction   – record IN / OUT / ADJUSTMENT, update stock
+  POST /api/sync-queue/process      – trigger offline sync queue recovery (admin only)
 """
 
 import os
+import sys
+import json
 import sqlite3
-from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, session
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# Ensure the database package directory is in sys.path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from inventory_manager import process_sync_queue, record_transaction
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your-secure-secret-key-inventory")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "core-inventory-secret-key-2026")
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "inventory_system.db")
+# Enable CORS with credentials for Vite and local dev servers
+CORS(
+    app,
+    supports_credentials=True,
+    origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+)
+DB_PATH = os.path.join(BASE_DIR, "inventory_system.db")
 
-def get_db_connection():
+
+# ---------------------------------------------------------------------------
+# DB Helper
+# ---------------------------------------------------------------------------
+
+def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
     conn.row_factory = sqlite3.Row
     return conn
 
-# 1. USER REGISTRATION
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.get_json() or {}
-    user_id = data.get('userId')
-    password = data.get('password')
-    full_name = data.get('fullName')
-    team = data.get('team')
 
-    if not all([user_id, password, full_name, team]):
-        return jsonify({"error": "All fields are required"}), 400
-
-    hashed_password = generate_password_hash(password)
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def _log_user_action(user_id: str, action: str) -> None:
+    """Insert a LOGIN or LOGOUT record into user_logs."""
     try:
-        cursor.execute(
-            """INSERT INTO users (user_id, password_hash, full_name, team)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, hashed_password, full_name, team)
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO user_logs (user_id, action) VALUES (?, ?);",
+            (user_id, action),
         )
         conn.commit()
-        return jsonify({"message": "User registered successfully"}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "User ID already exists"}), 409
-    finally:
         conn.close()
+    except Exception as exc:
+        print(f"[App] Warning: could not write user_log for {user_id}/{action}: {exc}")
 
-# 2. USER LOGIN
-@app.route('/api/login', methods=['POST'])
+
+# ---------------------------------------------------------------------------
+# Auth — /api/login  /api/logout  /api/me
+# ---------------------------------------------------------------------------
+
+@app.route("/api/login", methods=["POST"])
 def login():
-    data = request.get_json() or {}
-    user_id = data.get('userId')
-    password = data.get('password')
+    data     = request.get_json(silent=True) or {}
+    user_id  = (data.get("userId") or "").strip().lower()
+    password = data.get("password") or ""
 
-    conn = get_db_connection()
+    if not user_id or not password:
+        return jsonify({"error": "userId and password are required."}), 400
+
+    conn   = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT * FROM users WHERE user_id = ?;", (user_id,))
     user = cursor.fetchone()
     conn.close()
 
-    if user and check_password_hash(user['password_hash'], password):
-        # Store in session token/cookie
-        session['user_id'] = user['user_id']
-        session['full_name'] = user['full_name']
-        session['team'] = user['team']
-        return jsonify({
-            "message": "Login successful",
-            "user": {
-                "userId": user['user_id'],
-                "fullName": user['full_name'],
-                "team": user['team']
-            }
-        }), 200
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Invalid user ID or password."}), 401
 
-    return jsonify({"error": "Invalid User ID or password"}), 401
+    # Persist server-side session
+    session["user_id"]   = user["user_id"]
+    session["full_name"] = user["full_name"]
+    session["team"]      = user["team"]
+    session["role"]      = user["role"]
 
-# 3. LOGOUT & CURRENT USER
-@app.route('/api/logout', methods=['POST'])
+    _log_user_action(user["user_id"], "LOGIN")
+
+    return jsonify({
+        "message": "Login successful.",
+        "user": {
+            "userId":   user["user_id"],
+            "fullName": user["full_name"],
+            "team":     user["team"],
+            "role":     user["role"],
+        },
+    }), 200
+
+
+@app.route("/api/logout", methods=["POST"])
 def logout():
+    user_id = session.get("user_id")
+    if user_id:
+        _log_user_action(user_id, "LOGOUT")
     session.clear()
-    return jsonify({"message": "Logged out successfully"}), 200
+    return jsonify({"message": "Logged out successfully."}), 200
 
-@app.route('/api/me', methods=['GET'])
+
+@app.route("/api/me", methods=["GET"])
 def get_current_user():
-    if 'user_id' not in session:
+    if "user_id" not in session:
         return jsonify({"authenticated": False}), 401
     return jsonify({
         "authenticated": True,
-        "userId": session['user_id'],
-        "fullName": session['full_name'],
-        "team": session['team']
+        "userId":   session["user_id"],
+        "fullName": session["full_name"],
+        "team":     session["team"],
+        "role":     session.get("role", "Staff"),
     }), 200
 
-# 4. COMPUTER VISION DETECTION INGESTION WITH USER/TEAM ACCOUNTABILITY
-@app.route('/api/process-detections', methods=['POST'])
-def handle_detection_batch():
-    # Enforce server-side authentication check
-    if 'user_id' not in session:
+
+# ---------------------------------------------------------------------------
+# Inventory — GET /api/inventory
+# ---------------------------------------------------------------------------
+
+@app.route("/api/inventory", methods=["GET"])
+def get_inventory():
+    store_name_filter = request.args.get("store_name")
+
+    conn   = get_db()
+    cursor = conn.cursor()
+
+    if store_name_filter:
+        cursor.execute(
+            """
+            SELECT
+                p.sku,
+                p.name,
+                p.category,
+                p.asset_type,
+                si.store_name,
+                si.qty,
+                si.avail_qty,
+                si.status,
+                si.last_stocktake
+            FROM products p
+            JOIN store_inventory si ON p.sku = si.sku
+            WHERE si.store_name = ?
+            ORDER BY si.store_name, p.category, p.name;
+            """,
+            (store_name_filter,),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT
+                p.sku,
+                p.name,
+                p.category,
+                p.asset_type,
+                si.store_name,
+                si.qty,
+                si.avail_qty,
+                si.status,
+                si.last_stocktake
+            FROM products p
+            JOIN store_inventory si ON p.sku = si.sku
+            ORDER BY si.store_name, p.category, p.name;
+            """
+        )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    items = [dict(row) for row in rows]
+    return jsonify({"items": items, "count": len(items)}), 200
+
+
+# ---------------------------------------------------------------------------
+# Inventory Transaction — POST /api/inventory/transaction
+# ---------------------------------------------------------------------------
+
+@app.route("/api/inventory/transaction", methods=["POST"])
+def inventory_transaction():
+    if "user_id" not in session:
         return jsonify({"error": "Unauthorized. Please log in."}), 401
 
-    data = request.get_json() or {}
-    store_id = data.get('store_id')
-    detections = data.get('detections', [])
-    
-    # Extract identity safely from verified server session
-    user_id = session['user_id']
-    team = session['team']
+    data       = request.get_json(silent=True) or {}
+    sku        = (data.get("sku") or "").strip()
+    store_name = (data.get("store_name") or "").strip()
+    action     = (data.get("action") or "").strip().upper()
+    qty_delta  = data.get("qty_changed")
 
-    # Process batch and store accountability fields in database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    for det in detections:
-        sku = det.get('sku')
-        qty = det.get('detected_quantity', 0)
-        conf = det.get('confidence_score', 0.0)
-        img_path = det.get('image_path', '')
+    if not all([sku, store_name, action]):
+        return jsonify({"error": "sku, store_name, and action are required."}), 400
 
-        cursor.execute("SELECT product_id FROM products WHERE sku = ?", (sku,))
-        prod = cursor.fetchone()
-        if prod:
-            cursor.execute(
-                """INSERT INTO image_detections_log 
-                   (store_id, product_id, detected_quantity, confidence_score, image_path, created_by_user_id, team, processed_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'verified')""",
-                (store_id, prod['product_id'], qty, conf, img_path, user_id, team)
-            )
-            
-            # Update inventory table preserving existing User/Team accountability fields
-            cursor.execute(
-                """INSERT INTO store_inventory (store_id, product_id, quantity, last_synced_at)
-                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(store_id, product_id) DO UPDATE SET
-                       quantity = quantity + excluded.quantity,
-                       last_synced_at = CURRENT_TIMESTAMP""",
-                (store_id, prod['product_id'], qty)
-            )
+    if action not in ("IN", "OUT", "ADJUSTMENT"):
+        return jsonify({"error": "action must be IN, OUT, or ADJUSTMENT."}), 400
 
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success", "user": session['full_name'], "team": team}), 200
+    if qty_delta is None:
+        return jsonify({"error": "qty_changed is required."}), 400
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        qty_delta = int(qty_delta)
+    except (TypeError, ValueError):
+        return jsonify({"error": "qty_changed must be an integer."}), 400
+
+    user_id = session["user_id"]
+
+    try:
+        result = record_transaction(
+            sku=sku,
+            store_name=store_name,
+            user_id=user_id,
+            action=action,
+            qty_changed=qty_delta,
+        )
+        return jsonify({"status": "ok", **result}), 200
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 422
+    except Exception as exc:
+        print(f"[App] Transaction error: {exc}")
+        return jsonify({"error": "Internal server error during transaction."}), 500
+
+
+# ---------------------------------------------------------------------------
+# Sync Queue — POST /api/sync-queue/process  (admin only)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/sync-queue/process", methods=["POST"])
+def trigger_sync_queue():
+    if "user_id" not in session:
+        return jsonify({"error": "Unauthorized."}), 401
+    if session.get("role") != "Admin":
+        return jsonify({"error": "Admin role required."}), 403
+
+    data     = request.get_json(silent=True) or {}
+    store_id = data.get("store_id")  # Optional — None means all pending queues
+
+    try:
+        result = process_sync_queue(store_id=store_id)
+        return jsonify({"status": "ok", **result}), 200
+    except Exception as exc:
+        print(f"[App] Sync queue error: {exc}")
+        return jsonify({"error": "Sync queue processing failed."}), 500
+
+
+# ---------------------------------------------------------------------------
+# Entry Point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)

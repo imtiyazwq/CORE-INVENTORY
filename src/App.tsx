@@ -7,9 +7,9 @@ import { ScanInventoryPage } from './pages/ScanInventoryPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuthPage } from './components/AuthPage.tsx';
-import { storageService, StorageState } from './services/storageService';
+import { storageService, StorageState, TransactionPayload } from './services/storageService';
 import { authService } from './services/authService';
-import { ValidLocation, ModelConfig, UserAccount, ItemCategory } from './types';
+import { ValidLocation, ModelConfig, UserAccount } from './types';
 import { VALID_LOCATIONS } from './data/locations';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
@@ -21,14 +21,14 @@ interface Toast {
 }
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => authService.getCurrentUser());
-  const [activePage, setActivePage] = useState<PageId>('dashboard');
+  const [currentUser, setCurrentUser]   = useState<UserAccount | null>(() => authService.getCurrentUser());
+  const [activePage,  setActivePage]    = useState<PageId>('dashboard');
   const [scanLocation, setScanLocation] = useState<ValidLocation>(VALID_LOCATIONS[0]);
-  const [scanMode, setScanMode] = useState<'webcam' | 'upload'>('webcam');
+  const [scanMode, setScanMode]         = useState<'webcam' | 'upload'>('webcam');
   const [storageState, setStorageState] = useState<StorageState>(storageService.getState());
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [toasts, setToasts]             = useState<Toast[]>([]);
 
-  // Subscribe to central persistence storage
+  // Subscribe to storage updates
   useEffect(() => {
     const unsubscribe = storageService.subscribe((newState) => {
       setStorageState(newState);
@@ -36,17 +36,30 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Fetch authoritative inventory from server on mount and user session change
+  useEffect(() => {
+    storageService.fetchInventory().catch((err) =>
+      console.warn('[App] Initial inventory fetch failed:', err),
+    );
+  }, [currentUser]);
+
+  // ---------------------------------------------------------------------------
+  // Toast helpers
+  // ---------------------------------------------------------------------------
+
   const addToast = (type: 'success' | 'info' | 'warning', title: string, message?: string) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
     setToasts((prev) => [...prev, { id, type, title, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4500);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
   };
 
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
+
+  // ---------------------------------------------------------------------------
+  // Auth handlers
+  // ---------------------------------------------------------------------------
 
   const handleLoginSuccess = (user: UserAccount) => {
     setCurrentUser(user);
@@ -59,7 +72,9 @@ export default function App() {
     addToast('info', 'Logged Out', 'You have been safely signed out.');
   };
 
-  // --- Handlers ---
+  // ---------------------------------------------------------------------------
+  // Navigation handlers
+  // ---------------------------------------------------------------------------
 
   const handleNavigate = (page: PageId, mode?: 'webcam' | 'upload') => {
     if (mode) setScanMode(mode);
@@ -71,6 +86,10 @@ export default function App() {
     setActivePage('scan');
   };
 
+  // ---------------------------------------------------------------------------
+  // Inventory handlers
+  // ---------------------------------------------------------------------------
+
   const handleCheckout = (itemId: string, user: string, team: string, qty: number) => {
     storageService.checkoutItem(itemId, user, team, qty);
     addToast('success', 'Asset Checked Out', `Assigned to ${user} (${team})`);
@@ -81,186 +100,103 @@ export default function App() {
     addToast('success', 'Asset Checked In', `Returned to ${returnLocation}`);
   };
 
+  // ---------------------------------------------------------------------------
+  // handleScanConfirmed — manual entry via ScanInventoryPage
+  // Calls storageService.postTransaction() instead of the old CV detection API.
+  // ---------------------------------------------------------------------------
+
   const handleScanConfirmed = (data: {
-    location: ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number }>;
-    operator: string;
-    team?: string;
-    notes: string;
-    type: 'webcam' | 'upload';
-    previewUrl?: string;
+    location:       ValidLocation;
+    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku?: string }>;
+    operator:       string;
+    team?:          string;
+    notes:          string;
+    type:           'webcam' | 'upload';
+    previewUrl?:    string;
   }) => {
     const totalQty = data.confirmedItems.reduce((acc, it) => acc + it.quantity, 0);
 
+    // Record the scan in local activity history
     storageService.addScanRecord({
-      type: data.type,
-      location: data.location,
-      user: data.operator || currentUser?.userName || 'John Smith',
-      team: data.team || currentUser?.teamName || 'Warehouse Team A',
-      itemsDetected: data.confirmedItems,
-      totalQuantity: totalQty,
-      status: 'Confirmed',
-      notes: data.notes,
-      previewUrl: data.previewUrl,
+      type:           data.type,
+      location:       data.location,
+      user:           data.operator || currentUser?.userName || 'Unknown',
+      team:           data.team     || currentUser?.teamName || 'Unknown',
+      itemsDetected:  data.confirmedItems,
+      totalQuantity:  totalQty,
+      status:         'Confirmed',
+      notes:          data.notes,
+      previewUrl:     data.previewUrl,
     });
 
-    // Update existing inventory item quantities or add detected item to inventory
-    data.confirmedItems.forEach((det) => {
-      const match = storageState.items.find(
-        (it) => it.location === data.location && it.name.toLowerCase() === det.className.toLowerCase()
+    // Post each confirmed item as an inventory transaction via the API
+    data.confirmedItems.forEach(async (det) => {
+      // Use sku if provided; otherwise attempt to match by name against local items
+      const matchedItem = storageState.items.find(
+        (it) =>
+          it.location === data.location &&
+          (it.itemCode === det.sku || it.name.toLowerCase() === det.className.toLowerCase()),
       );
-      const nowStr = `${new Date().toISOString().slice(0, 10)} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-      if (match) {
-        storageService.updateItem({
-          ...match,
-          quantity: match.quantity + det.quantity,
-          availableQuantity: match.availableQuantity + det.quantity,
-          lastSeen: nowStr,
-        });
-      } else {
-        const lower = det.className.toLowerCase();
-        let cat: ItemCategory = 'IT Equipment';
-        if (
-          lower.includes('beaker') ||
-          lower.includes('flask') ||
-          lower.includes('chemical') ||
-          lower.includes('pipette') ||
-          lower.includes('stirrer') ||
-          lower.includes('tube') ||
-          lower.includes('scale')
-        ) {
-          cat = 'Laboratory & Chemical';
-        } else if (
-          lower.includes('goggle') ||
-          lower.includes('glove') ||
-          lower.includes('safety') ||
-          lower.includes('cone') ||
-          lower.includes('barrier')
-        ) {
-          cat = 'Safety & Protective Equipment';
-        } else if (
-          lower.includes('scissor') ||
-          lower.includes('tape') ||
-          lower.includes('paper') ||
-          lower.includes('pen') ||
-          lower.includes('marker') ||
-          lower.includes('glue')
-        ) {
-          cat = 'Office Supplies';
-        }
-        const skuPrefix =
-          cat === 'Laboratory & Chemical'
-            ? 'LAB'
-            : cat === 'Safety & Protective Equipment'
-            ? 'SAF'
-            : cat === 'Office Supplies'
-            ? 'OFF'
-            : 'IT';
-        const cleanName = det.className.toUpperCase().replace(/[^A-Z0-9]/g, '-').slice(0, 6);
-        const randCode = Math.floor(Math.random() * 900) + 100;
-        storageService.addItem({
-          id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          itemCode: `${skuPrefix}-${cleanName}-${randCode}`,
-          name: det.className,
-          category: cat,
-          specification: 'YOLO Computer Vision Verified',
-          assetType: 'Non-Consumable',
-          quantity: det.quantity,
-          availableQuantity: det.quantity,
-          location: data.location,
-          rackShelf: 'RACK-01',
-          status: 'Available',
-          lastSeen: nowStr,
-          remarks: `Scanned and confirmed by ${data.operator}`,
-        });
-      }
-    });
 
-    // Sync detection events to SQLite Backend with User/Team accountability
-    const storeMap: Record<string, number> = {
-      'Store 1 (Main Retail Hub)': 1,
-      'Store 2 (Suburban Outlet)': 2,
-      'Store 3 (Remote Warehouse Alpha)': 3,
-      'Store 4 (Field Operations Unit)': 4,
-    };
-    const storeId = storeMap[data.location] || 1;
+      const sku        = det.sku || matchedItem?.itemCode;
+      const store_name = data.location;
 
-    const skuMap: Record<string, string> = {
-      'arduino uno rev3': 'ELE-ARD-001',
-      'raspberry pi 4 model b': 'ELE-RPI-002',
-      'esp32 wroom module': 'ELE-ESP-003',
-      'digital soldering station': 'ELE-SOL-004',
-      'digital multimeter pro': 'ELE-MUL-005',
-      'borosilicate glass beaker 500ml': 'SCI-GLS-001',
-      'safety goggles': 'SCI-GOG-002',
-      'magnetic stirrer hotplate': 'SCI-STR-003',
-      'digital balance scale': 'SCI-BAL-004',
-      'hydraulic robotics arm kit': 'KIT-ROB-001',
-      'solar energy experimenter kit': 'KIT-SOL-002',
-      'iot smart home sensor bundle': 'KIT-IOT-003',
-    };
-
-    const serverDetections = data.confirmedItems.map((it) => {
-      const lower = it.className.toLowerCase();
-      let sku = skuMap[lower];
       if (!sku) {
-        const found = Object.keys(skuMap).find((k) => lower.includes(k) || k.includes(lower));
-        sku = found ? skuMap[found] : 'ELE-ARD-001';
+        console.warn(
+          `[App] handleScanConfirmed: No SKU found for "${det.className}" — skipping transaction.`,
+        );
+        return;
       }
-      return {
-        sku,
-        detected_quantity: it.quantity,
-        confidence_score: it.confidence,
-        image_path: 'cv_captures/detection_' + Date.now() + '.jpg',
-      };
-    });
 
-    const token = localStorage.getItem('session_token');
-    fetch('/api/process-detections', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        store_id: storeId,
-        detections: serverDetections,
-      }),
-    })
-      .then((res) => res.json())
-      .then((resData) => {
-        if (resData.status === 'success') {
-          console.log('[SQLite Audit Log] Recorded detection batch for User:', resData.user, 'Team:', resData.team);
-        }
-      })
-      .catch((err) => {
-        console.warn('[SQLite Audit Log] Error posting detection batch to server:', err);
-      });
+      const txn: TransactionPayload = {
+        sku,
+        store_name,
+        action:      'IN',
+        qty_changed: det.quantity,
+      };
+
+      try {
+        await storageService.postTransaction(txn);
+      } catch (err) {
+        console.warn('[App] postTransaction error for', sku, err);
+      }
+    });
 
     addToast(
       'success',
-      'YOLO Scan Committed',
-      `Logged ${totalQty} units at ${data.location} by ${data.operator}`
+      'Scan Committed',
+      `Logged ${totalQty} units at ${data.location} by ${data.operator}`,
     );
     setActivePage('dashboard');
   };
 
+  // ---------------------------------------------------------------------------
+  // Sync / Export / Import / Reset handlers
+  // ---------------------------------------------------------------------------
+
   const handleForceSync = () => {
-    const result = storageService.syncQueue();
-    addToast(
-      'info',
-      'Queue Synchronized',
-      `Synchronized ${result.syncedCount} offline mutations at ${result.timestamp}`
-    );
-    return result;
+    storageService.syncQueue().then((result) => {
+      addToast(
+        'info',
+        'Queue Synchronized',
+        `Synchronized ${result.syncedCount} offline mutations at ${result.timestamp}`,
+      );
+    }).catch((err) => {
+      console.error('[App] Sync failed:', err);
+      addToast('warning', 'Sync Failed', 'Could not reach server. Mutations remain queued.');
+    });
+    // Return a compatible sync result immediately for HeaderBar (optimistic)
+    return storageService.getState().pendingMutations.length > 0
+      ? { syncedCount: storageState.pendingMutations.length, timestamp: new Date().toLocaleTimeString() }
+      : { syncedCount: 0, timestamp: new Date().toLocaleTimeString() };
   };
 
   const handleExportJSON = () => {
     const jsonStr = storageService.exportJSON();
     const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = `inventory_ledger_backup_${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
@@ -272,7 +208,7 @@ export default function App() {
   const handleImportJSON = (jsonString: string) => {
     const res = storageService.importJSON(jsonString);
     if (res.success) {
-      addToast('success', 'Data Restored', `Imported ${res.itemCount} inventory items successfully.`);
+      addToast('success', 'Data Restored', `Imported ${res.itemCount} inventory items.`);
     } else {
       addToast('warning', 'Import Failed', res.message);
     }
@@ -281,7 +217,8 @@ export default function App() {
 
   const handleResetFactory = () => {
     storageService.resetToFactoryDataset();
-    addToast('info', 'Reset Complete', 'Reloaded initial dataset across the 4 verified stores.');
+    addToast('info', 'Reset Complete', 'Cleared local ledger. Fetching server data…');
+    storageService.fetchInventory();
   };
 
   const handleUpdateModelConfig = (config: Partial<ModelConfig>) => {
@@ -289,10 +226,17 @@ export default function App() {
     addToast('success', 'Model Configuration Saved');
   };
 
-  // If user is not authenticated, render the Authentication screen
+  // ---------------------------------------------------------------------------
+  // Auth gate
+  // ---------------------------------------------------------------------------
+
   if (!currentUser) {
     return <AuthPage onLoginSuccess={handleLoginSuccess} />;
   }
+
+  // ---------------------------------------------------------------------------
+  // Main layout
+  // ---------------------------------------------------------------------------
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-200/80 font-sans text-slate-900">
@@ -307,7 +251,7 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        {/* Compact Header Bar */}
+        {/* Header Bar */}
         <HeaderBar
           activePage={activePage}
           isOnline={storageState.isOnline}
@@ -318,7 +262,7 @@ export default function App() {
           onLogout={handleLogout}
         />
 
-        {/* Dynamic Page Content Viewport */}
+        {/* Page Viewport */}
         <main className="flex-1 overflow-y-auto px-6 py-6 min-w-0">
           <div className="max-w-7xl mx-auto">
             {activePage === 'dashboard' && (
@@ -347,9 +291,7 @@ export default function App() {
             )}
 
             {activePage === 'history' && (
-              <ActivityHistoryPage
-                scanHistory={storageState.scanHistory}
-              />
+              <ActivityHistoryPage scanHistory={storageState.scanHistory} />
             )}
 
             {activePage === 'settings' && (
@@ -371,7 +313,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Floating Notifications Toast Container */}
+      {/* Toast Notifications */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
         {toasts.map((toast) => (
           <div

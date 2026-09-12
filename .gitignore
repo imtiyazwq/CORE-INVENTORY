@@ -19,6 +19,9 @@ database/*.db
 database/*.db-shm
 database/*.db-wal
 
+# firebase 
+database/petrosainsteamb-firebase-adminsdk-fbsvc-e4494b1913.json
+
 # Logs
 *.log
 npm-debug.log*

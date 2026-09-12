@@ -1,8 +1,8 @@
 export type ValidLocation =
-  | 'Store_1_Store Level 4'
-  | 'Store_2_Edustore'
-  | 'Store_3_Chemical room'
-  | 'Store_4_store concourse';
+  | 'CHEMICAL ROOM'
+  | 'CHILLAX'
+  | 'MAKER STUDIO'
+  | 'STORE 1';
 
 export type AssetType = 'Non-Consumable' | 'Consumable';
 

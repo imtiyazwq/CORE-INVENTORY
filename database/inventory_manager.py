@@ -1,305 +1,286 @@
 """
 inventory_manager.py
-Detection Ingestion & Stock Adjustment Handler for Multi-Store System
+Inventory Transaction Handler & Offline Sync Queue Recovery
+for CORE-INVENTORY System.
 
-Handles computer vision image detection payloads, transaction-safe stock updates,
-offline fallback queuing for Stores 3 & 4, sync queue recovery, and inventory audit discrepancy checks.
+Functions:
+  record_transaction()    – atomically update store_inventory and log to inventory_logs
+  process_sync_queue()    – replay pending offline mutations from sync_queue
+  set_store_sync_status() – utility to flip a store's sync_status
+
+YOLO / computer-vision helpers have been removed.
 """
 
-import sqlite3
 import json
-import os
-from typing import List, Dict, Any, Optional, Tuple
+import sqlite3
+from typing import Any, Dict, Optional
+
 from init_db import get_db_connection, DB_PATH
 
 
-def process_detection_batch(
-    store_id: int,
-    detections: List[Dict[str, Any]],
-    min_confidence: float = 0.75,
-    force_offline: bool = False,
+# ---------------------------------------------------------------------------
+# record_transaction
+# ---------------------------------------------------------------------------
+
+def record_transaction(
+    sku: str,
+    store_name: str,
+    user_id: str,
+    action: str,
+    qty_changed: int,
     db_path: str = DB_PATH,
-    user_id: Optional[str] = None,
-    team: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Transaction-safe processor for computer vision detection output batches.
+    Atomically update store_inventory and write an inventory_logs entry.
 
-    Parameters:
-    - store_id: Target store identifier (1..4)
-    - detections: List of detection dicts containing:
-        {'sku': str, 'detected_quantity': int, 'confidence_score': float, 'image_path': str}
-    - min_confidence: Threshold float (e.g. 0.75) for auto-verifying detections.
-    - force_offline: Flag to simulate/trigger offline queuing for Store 3 or Store 4.
-    - db_path: Path to SQLite database.
+    Parameters
+    ----------
+    sku         : Product SKU (must exist in products table)
+    store_name  : Storage location name (must exist in stores table)
+    user_id     : Authenticated user performing the transaction
+    action      : 'IN' | 'OUT' | 'ADJUSTMENT'
+    qty_changed : Positive integer (treated as delta; OUT uses qty_changed to reduce)
 
-    Returns:
-    - Summary dictionary with counts of verified, conflict, queued items, and overall status.
+    Returns
+    -------
+    Dict with updated qty / avail_qty values.
+
+    Raises
+    ------
+    ValueError  : If SKU or store not found, or stock would go negative on OUT.
     """
-    conn = get_db_connection(db_path)
+    if action not in ("IN", "OUT", "ADJUSTMENT"):
+        raise ValueError(f"Invalid action '{action}'. Must be IN, OUT, or ADJUSTMENT.")
+
+    conn   = get_db_connection(db_path)
     cursor = conn.cursor()
 
     try:
-        # Check store existence and sync status
-        cursor.execute("SELECT location_type, sync_status FROM stores WHERE store_id = ?;", (store_id,))
-        store_row = cursor.fetchone()
-        if not store_row:
-            raise ValueError(f"Store ID {store_id} does not exist in database.")
+        # Validate product exists
+        cursor.execute("SELECT sku FROM products WHERE sku = ?;", (sku,))
+        if not cursor.fetchone():
+            raise ValueError(f"SKU '{sku}' not found in products table.")
 
-        location_type, sync_status = store_row["location_type"], store_row["sync_status"]
+        # Validate store exists
+        cursor.execute("SELECT store_id FROM stores WHERE store_name = ?;", (store_name,))
+        if not cursor.fetchone():
+            raise ValueError(f"Store '{store_name}' not found in stores table.")
 
-        # Determine if batch should be queued offline
-        is_offline_event = force_offline or (sync_status == "offline")
-
-        if is_offline_event:
-            if location_type != "offline_capable":
-                raise PermissionError(f"Store ID {store_id} ({location_type}) does not support offline queuing.")
-
-            # Queue payload in sync_queue
-            payload_json = json.dumps({
-                "store_id": store_id,
-                "min_confidence": min_confidence,
-                "detections": detections
-            })
-
-            cursor.execute(
-                """INSERT INTO sync_queue (store_id, payload_json, status)
-                   VALUES (?, ?, 'pending');""",
-                (store_id, payload_json)
+        # Fetch current stock (row must exist; we do NOT auto-create rows here)
+        cursor.execute(
+            "SELECT qty, avail_qty FROM store_inventory WHERE sku = ? AND store_name = ?;",
+            (sku, store_name),
+        )
+        inv_row = cursor.fetchone()
+        if not inv_row:
+            raise ValueError(
+                f"No inventory row found for SKU='{sku}' / store='{store_name}'. "
+                "Seed the store_inventory table first."
             )
 
-            # Update store status to offline
-            cursor.execute("UPDATE stores SET sync_status = 'offline' WHERE store_id = ?;", (store_id,))
+        current_qty       = inv_row["qty"]
+        current_avail_qty = inv_row["avail_qty"]
 
-            # Pre-log pending detection records into image_detections_log for audit trail
-            pending_count = 0
-            for det in detections:
-                sku = det.get("sku")
-                cursor.execute("SELECT product_id FROM products WHERE sku = ?;", (sku,))
-                prod = cursor.fetchone()
-                if prod:
-                    cursor.execute(
-                        """INSERT INTO image_detections_log 
-                           (store_id, product_id, detected_quantity, confidence_score, image_path, created_by_user_id, team, processed_status)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending');""",
-                        (store_id, prod["product_id"], det["detected_quantity"], det["confidence_score"], det.get("image_path", ""), user_id, team)
-                    )
-                    pending_count += 1
-
-            conn.commit()
-            print(f"[Store {store_id}] Offline event buffered into sync_queue ({pending_count} pending detections recorded).")
-            return {
-                "status": "queued_offline",
-                "store_id": store_id,
-                "total_items": len(detections),
-                "queued_items": pending_count,
-                "verified_items": 0,
-                "conflict_items": 0
-            }
-
-        # ONLINE TRANSACTION PROCESSING
-        cursor.execute("BEGIN TRANSACTION;")
-
-        verified_count = 0
-        conflict_count = 0
-
-        for det in detections:
-            sku = det.get("sku")
-            qty = det.get("detected_quantity", 0)
-            conf = det.get("confidence_score", 0.0)
-            img_path = det.get("image_path", "unknown.jpg")
-
-            # Validate SKU
-            cursor.execute("SELECT product_id FROM products WHERE sku = ?;", (sku,))
-            prod = cursor.fetchone()
-            if not prod:
-                print(f"[Warning] Unknown SKU '{sku}' detected in Store {store_id}. Flagging as conflict.")
-                conflict_count += 1
-                continue
-
-            product_id = prod["product_id"]
-
-            # Evaluate confidence threshold
-            if conf >= min_confidence:
-                status = "verified"
-                verified_count += 1
-
-                # Update store inventory atomically (Upsert pattern)
-                cursor.execute(
-                    """INSERT INTO store_inventory (store_id, product_id, quantity, last_synced_at)
-                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                       ON CONFLICT(store_id, product_id) DO UPDATE SET
-                           quantity = quantity + excluded.quantity,
-                           last_synced_at = CURRENT_TIMESTAMP;""",
-                    (store_id, product_id, qty)
+        # Calculate deltas
+        if action == "IN":
+            new_qty       = current_qty + qty_changed
+            new_avail_qty = current_avail_qty + qty_changed
+            signed_delta  = qty_changed
+        elif action == "OUT":
+            if qty_changed > current_avail_qty:
+                raise ValueError(
+                    f"Insufficient available stock for OUT: "
+                    f"requested {qty_changed}, available {current_avail_qty}."
                 )
-            else:
-                status = "conflict"
-                conflict_count += 1
+            new_qty       = current_qty           # total physical qty unchanged on check-out
+            new_avail_qty = current_avail_qty - qty_changed
+            signed_delta  = -qty_changed
+        else:  # ADJUSTMENT
+            # qty_changed can be positive (add) or negative (reduce)
+            new_qty       = max(0, current_qty + qty_changed)
+            new_avail_qty = max(0, current_avail_qty + qty_changed)
+            signed_delta  = qty_changed
 
-            # Log detection event into audit table with user & team accountability
-            cursor.execute(
-                """INSERT INTO image_detections_log
-                   (store_id, product_id, detected_quantity, confidence_score, image_path, created_by_user_id, team, processed_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?);""",
-                (store_id, product_id, qty, conf, img_path, user_id, team, status)
-            )
+        # Derive a human-readable status
+        new_status = "Available" if new_avail_qty > 0 else "Out of Stock"
+
+        cursor.execute("BEGIN;")
+
+        # Update store_inventory
+        cursor.execute(
+            """
+            UPDATE store_inventory
+               SET qty       = ?,
+                   avail_qty = ?,
+                   status    = ?
+             WHERE sku = ? AND store_name = ?;
+            """,
+            (new_qty, new_avail_qty, new_status, sku, store_name),
+        )
+
+        # Log the transaction
+        cursor.execute(
+            """
+            INSERT INTO inventory_logs (sku, store_name, user_id, action, qty_changed)
+            VALUES (?, ?, ?, ?, ?);
+            """,
+            (sku, store_name, user_id, action, signed_delta),
+        )
 
         conn.commit()
-        print(f"[Store {store_id}] Processed batch online: {verified_count} verified, {conflict_count} conflicts.")
+
+        print(
+            f"[Inventory] {action} | SKU={sku} | store={store_name} | "
+            f"delta={signed_delta:+d} | new_qty={new_qty} avail={new_avail_qty}"
+        )
+
         return {
-            "status": "processed_online",
-            "store_id": store_id,
-            "total_items": len(detections),
-            "verified_items": verified_count,
-            "conflict_items": conflict_count,
-            "queued_items": 0
+            "sku":        sku,
+            "store_name": store_name,
+            "action":     action,
+            "qty_changed": signed_delta,
+            "new_qty":    new_qty,
+            "new_avail_qty": new_avail_qty,
+            "status":     new_status,
         }
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        print(f"[Error] Transaction failed for Store {store_id}: {e}")
-        raise e
+        raise
     finally:
         conn.close()
 
 
-def process_sync_queue(store_id: Optional[int] = None, db_path: str = DB_PATH) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# process_sync_queue
+# ---------------------------------------------------------------------------
+
+def process_sync_queue(
+    store_id: Optional[int] = None,
+    db_path:  str = DB_PATH,
+) -> Dict[str, Any]:
     """
-    Processes pending offline sync payloads in sync_queue.
-    Replays queued image detections into inventory and updates detection log status.
+    Replay pending offline inventory transaction payloads from sync_queue.
+
+    Each payload_json in sync_queue must have the shape:
+        {
+            "sku":        "<sku>",
+            "store_name": "<store_name>",
+            "user_id":    "<user_id>",
+            "action":     "IN" | "OUT" | "ADJUSTMENT",
+            "qty_changed": <int>
+        }
+
+    Returns a summary dict: { synced_payloads, processed_transactions, failed_payloads }
     """
-    conn = get_db_connection(db_path)
+    conn   = get_db_connection(db_path)
     cursor = conn.cursor()
 
     try:
-        if store_id:
+        if store_id is not None:
             cursor.execute(
-                "SELECT queue_id, store_id, payload_json FROM sync_queue WHERE store_id = ? AND status = 'pending' ORDER BY created_at ASC;",
-                (store_id,)
+                """SELECT queue_id, store_id, payload_json
+                     FROM sync_queue
+                    WHERE store_id = ? AND status = 'pending'
+                    ORDER BY created_at ASC;""",
+                (store_id,),
             )
         else:
             cursor.execute(
-                "SELECT queue_id, store_id, payload_json FROM sync_queue WHERE status = 'pending' ORDER BY created_at ASC;"
+                """SELECT queue_id, store_id, payload_json
+                     FROM sync_queue
+                    WHERE status = 'pending'
+                    ORDER BY created_at ASC;"""
             )
 
-        queued_items = cursor.fetchall()
-        if not queued_items:
+        pending = cursor.fetchall()
+        conn.close()  # release for per-transaction calls below
+
+        if not pending:
             print("[Sync] No pending offline sync payloads found.")
-            return {"synced_payloads": 0, "processed_detections": 0}
+            return {"synced_payloads": 0, "processed_transactions": 0, "failed_payloads": 0}
 
-        total_synced_payloads = 0
-        total_synced_detections = 0
+        synced_payloads        = 0
+        processed_transactions = 0
+        failed_payloads        = 0
 
-        cursor.execute("BEGIN TRANSACTION;")
+        for item in pending:
+            qid  = item["queue_id"]
+            sid  = item["store_id"]
 
-        for item in queued_items:
-            qid = item["queue_id"]
-            sid = item["store_id"]
-            payload = json.loads(item["payload_json"])
-            detections = payload.get("detections", [])
-            min_confidence = payload.get("min_confidence", 0.75)
+            try:
+                payload = json.loads(item["payload_json"])
 
-            for det in detections:
-                sku = det.get("sku")
-                qty = det.get("detected_quantity", 0)
-                conf = det.get("confidence_score", 0.0)
-
-                cursor.execute("SELECT product_id FROM products WHERE sku = ?;", (sku,))
-                prod = cursor.fetchone()
-                if not prod:
-                    continue
-                product_id = prod["product_id"]
-
-                status = "verified" if conf >= min_confidence else "conflict"
-
-                # Update pending log status or insert log entry
-                cursor.execute(
-                    """UPDATE image_detections_log
-                       SET processed_status = ?
-                       WHERE store_id = ? AND product_id = ? AND processed_status = 'pending';""",
-                    (status, sid, product_id)
+                record_transaction(
+                    sku        = payload["sku"],
+                    store_name = payload["store_name"],
+                    user_id    = payload.get("user_id", "system"),
+                    action     = payload["action"],
+                    qty_changed= int(payload["qty_changed"]),
+                    db_path    = db_path,
                 )
+                processed_transactions += 1
 
-                # Update stock level for verified offline detections
-                if status == "verified":
-                    cursor.execute(
-                        """INSERT INTO store_inventory (store_id, product_id, quantity, last_synced_at)
-                           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                           ON CONFLICT(store_id, product_id) DO UPDATE SET
-                               quantity = quantity + excluded.quantity,
-                               last_synced_at = CURRENT_TIMESTAMP;""",
-                        (sid, product_id, qty)
-                    )
-                    total_synced_detections += 1
+                # Mark queue item as synced
+                _update_queue_status(qid, "synced", sid, db_path)
+                synced_payloads += 1
 
-            # Mark queue item as synced
-            cursor.execute("UPDATE sync_queue SET status = 'synced' WHERE queue_id = ?;", (qid,))
-            # Restore store sync status to online
-            cursor.execute("UPDATE stores SET sync_status = 'online' WHERE store_id = ?;", (sid,))
-            total_synced_payloads += 1
+            except Exception as exc:
+                print(f"[Sync] Failed to replay queue_id={qid}: {exc}")
+                _update_queue_status(qid, "failed", sid, db_path)
+                failed_payloads += 1
 
-        conn.commit()
-        print(f"[Sync Recovery] Successfully synced {total_synced_payloads} payloads ({total_synced_detections} verified item detections).")
+        print(
+            f"[Sync] Recovery complete: {synced_payloads} synced, "
+            f"{processed_transactions} transactions applied, "
+            f"{failed_payloads} failed."
+        )
         return {
-            "synced_payloads": total_synced_payloads,
-            "processed_detections": total_synced_detections
+            "synced_payloads":        synced_payloads,
+            "processed_transactions": processed_transactions,
+            "failed_payloads":        failed_payloads,
         }
 
-    except Exception as e:
-        conn.rollback()
-        print(f"[Sync Error] Offline sync recovery failed: {e}")
-        raise e
+    except Exception as exc:
+        print(f"[Sync] Critical error during sync queue recovery: {exc}")
+        raise
+
+
+def _update_queue_status(queue_id: int, status: str, store_id: int, db_path: str) -> None:
+    """Helper: update a sync_queue row status and restore store sync_status on success."""
+    conn = get_db_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE sync_queue SET status = ? WHERE queue_id = ?;",
+            (status, queue_id),
+        )
+        if status == "synced":
+            conn.execute(
+                "UPDATE stores SET sync_status = 'online' WHERE store_id = ?;",
+                (store_id,),
+            )
+        conn.commit()
     finally:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# set_store_sync_status  (utility)
+# ---------------------------------------------------------------------------
+
 def set_store_sync_status(store_id: int, status: str, db_path: str = DB_PATH) -> None:
-    """Updates store sync status ('online', 'offline', 'syncing')."""
+    """
+    Update a store's sync_status to 'online', 'offline', or 'syncing'.
+    """
     if status not in ("online", "offline", "syncing"):
-        raise ValueError(f"Invalid status '{status}'. Must be online, offline, or syncing.")
+        raise ValueError(f"Invalid status '{status}'. Must be 'online', 'offline', or 'syncing'.")
+
     conn = get_db_connection(db_path)
-    conn.execute("UPDATE stores SET sync_status = ? WHERE store_id = ?;", (status, store_id))
-    conn.commit()
-    conn.close()
-
-
-def audit_inventory_discrepancies(store_id: int, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
-    """
-    Compares current recorded inventory stock against verified detection logs for audit checks.
-    """
-    conn = get_db_connection(db_path)
-    cursor = conn.cursor()
-
-    query = """
-    SELECT 
-        p.product_id,
-        p.sku,
-        p.product_name,
-        COALESCE(si.quantity, 0) AS current_stock,
-        COALESCE(SUM(CASE WHEN idl.processed_status = 'verified' THEN idl.detected_quantity ELSE 0 END), 0) AS total_verified_detected,
-        COALESCE(SUM(CASE WHEN idl.processed_status = 'conflict' THEN idl.detected_quantity ELSE 0 END), 0) AS total_conflict_detected,
-        COALESCE(SUM(CASE WHEN idl.processed_status = 'pending' THEN idl.detected_quantity ELSE 0 END), 0) AS total_pending_detected
-    FROM products p
-    LEFT JOIN store_inventory si ON p.product_id = si.product_id AND si.store_id = ?
-    LEFT JOIN image_detections_log idl ON p.product_id = idl.product_id AND idl.store_id = ?
-    GROUP BY p.product_id, p.sku, p.product_name;
-    """
-
-    cursor.execute(query, (store_id, store_id))
-    rows = cursor.fetchall()
-    conn.close()
-
-    audit_results = []
-    for r in rows:
-        audit_results.append({
-            "product_id": r["product_id"],
-            "sku": r["sku"],
-            "product_name": r["product_name"],
-            "current_stock": r["current_stock"],
-            "total_verified_detected": r["total_verified_detected"],
-            "total_conflict_detected": r["total_conflict_detected"],
-            "total_pending_detected": r["total_pending_detected"]
-        })
-
-    return audit_results
+    try:
+        conn.execute(
+            "UPDATE stores SET sync_status = ? WHERE store_id = ?;",
+            (status, store_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
