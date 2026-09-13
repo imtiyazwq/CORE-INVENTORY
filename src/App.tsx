@@ -111,7 +111,7 @@ export default function App() {
 
   const handleScanConfirmed = async (data: {
     location:       ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku: string | null }>;
+    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku: string | null; action: 'IN' | 'OUT' }>;
     operator:       string;
     team?:          string;
     notes:          string;
@@ -119,6 +119,8 @@ export default function App() {
     previewUrl?:    string;
   }) => {
     const totalQty = data.confirmedItems.reduce((acc, it) => acc + it.quantity, 0);
+    const inQty  = data.confirmedItems.filter((it) => it.action === 'IN').reduce((acc, it) => acc + it.quantity, 0);
+    const outQty = data.confirmedItems.filter((it) => it.action === 'OUT').reduce((acc, it) => acc + it.quantity, 0);
 
     // Record the scan in local activity history
     storageService.addScanRecord({
@@ -156,43 +158,49 @@ export default function App() {
           console.warn(
             `[App] handleScanConfirmed: No product mapping for "${det.className}" — skipping transaction.`,
           );
-          return { className: det.className, quantity: det.quantity, ok: false, reason: 'no matching product in inventory' };
+          return { className: det.className, quantity: det.quantity, action: det.action, ok: false, reason: 'no matching product in inventory' };
         }
 
+        // qty_changed is always the positive magnitude for IN/OUT — the
+        // server negates it internally for OUT (see storageService's
+        // TransactionPayload contract, also relied on by ConfirmScanModal).
         const txn: TransactionPayload = {
           sku,
           store_name: data.location,
-          action:      'IN',
+          action:      det.action,
           qty_changed: det.quantity,
         };
 
         try {
           const result = await storageService.postTransaction(txn);
           if (!result.success) {
-            return { className: det.className, quantity: det.quantity, ok: false, reason: result.error || 'rejected by server' };
+            return { className: det.className, quantity: det.quantity, action: det.action, ok: false, reason: result.error || 'rejected by server' };
           }
-          return { className: det.className, quantity: det.quantity, ok: true, reason: null as string | null };
+          return { className: det.className, quantity: det.quantity, action: det.action, ok: true, reason: null as string | null };
         } catch (err) {
           console.warn('[App] postTransaction error for', sku, err);
-          return { className: det.className, quantity: det.quantity, ok: false, reason: err instanceof Error ? err.message : 'unexpected error' };
+          return { className: det.className, quantity: det.quantity, action: det.action, ok: false, reason: err instanceof Error ? err.message : 'unexpected error' };
         }
       }),
     );
 
     const succeeded    = results.filter((r) => r.ok);
     const failed       = results.filter((r) => !r.ok);
-    const succeededQty = succeeded.reduce((acc, r) => acc + r.quantity, 0);
+    const succeededInQty  = succeeded.filter((r) => r.action === 'IN').reduce((acc, r) => acc + r.quantity, 0);
+    const succeededOutQty = succeeded.filter((r) => r.action === 'OUT').reduce((acc, r) => acc + r.quantity, 0);
+    const summaryLabel = (inU: number, outU: number) =>
+      [inU > 0 ? `${inU} IN` : null, outU > 0 ? `${outU} OUT` : null].filter(Boolean).join(' · ') || `${inU + outU} units`;
 
     if (failed.length === 0) {
-      addToast('success', 'Scan Committed', `Logged ${totalQty} units at ${data.location} by ${data.operator}`);
+      addToast('success', 'Scan Committed', `Logged ${summaryLabel(inQty, outQty)} at ${data.location} by ${data.operator}`);
     } else if (succeeded.length === 0) {
       addToast(
         'warning',
         'Scan Not Recorded',
-        `${failed.map((f) => f.className).join(', ')} could not be added: no matching product in inventory.`,
+        `${failed.map((f) => f.className).join(', ')} could not be posted: no matching product in inventory.`,
       );
     } else {
-      addToast('success', 'Scan Partially Committed', `Logged ${succeededQty} units at ${data.location}: ${succeeded.map((s) => s.className).join(', ')}.`);
+      addToast('success', 'Scan Partially Committed', `Logged ${summaryLabel(succeededInQty, succeededOutQty)} at ${data.location}: ${succeeded.map((s) => s.className).join(', ')}.`);
       addToast(
         'warning',
         'Some Items Skipped',
@@ -312,6 +320,7 @@ export default function App() {
                 defaultLocation={scanLocation}
                 initialMode={scanMode}
                 currentUser={currentUser}
+                items={storageState.items}
               />
             )}
 

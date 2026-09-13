@@ -632,3 +632,143 @@ are actually meant to be tracked separately. Until one of those happens,
 scanning/manually adding any of these 6 classes will correctly show a
 "could not be added" warning instead of silently vanishing — which is the
 fix, but the underlying model/catalog mismatch they represent is still open.
+
+---
+
+## 11. Feature: Per-Item IN/OUT Toggle on ScanInventoryPage (2026-09-13)
+
+**New feature, builds on [Section 10](#10-root-cause-fix-classname--sku-identity-2026-09-13).**
+Before this, every confirmed item on `ScanInventoryPage.tsx` — AI detections
+*and* manual adds — was hardcoded to `action: 'IN'` in `App.tsx`'s
+`handleScanConfirmed`. There was no way to log a removal (`OUT`) from this
+page at all; the only OUT-capable UI was `ConfirmScanModal.tsx` ([Section
+9](#9-feature-manual-in--out--adjustment-stock-transactions-2026-09-13)), a
+one-item-at-a-time modal on the Inventory page. This adds a per-row IN/OUT
+toggle directly to the scan confirmation list, so a single scan/manual-add
+batch can post a mix of additions and removals in one go. This only makes
+sense stacked on top of Section 10's fix — without a resolved `sku` per row,
+there'd be nothing to validate an OUT quantity against or post a transaction
+for.
+
+### What was built
+
+- **`ConfirmedItemRow` gained an `action: 'IN' | 'OUT'` field**, defaulting to
+  `'IN'` everywhere a row is created (webcam detection loop, upload/YOLO
+  path, manual "Add Item Manually" dropdown) — preserves the exact prior
+  behavior as the default. The webcam loop re-detects and rebuilds this list
+  every ~70ms, so it now carries over each row's existing `action` by
+  `className` across frames instead of resetting it to `'IN'` on the very
+  next detection tick — without that, toggling a live-webcam row to OUT would
+  have snapped back to IN before the user could even click Confirm.
+- **Per-row IN/OUT toggle**, reusing `ConfirmScanModal.tsx`'s existing
+  segmented-pill pattern (bordered pill, `PackagePlus`/emerald for IN,
+  `PackageMinus`/rose for OUT) rather than inventing a new control. Each item
+  row was restructured from a single line (name/badges + stepper) into two
+  stacked lines — name/badges + delete on top, action toggle + quantity
+  stepper below — to fit the new control without crowding the existing
+  stepper.
+- **Client-side OUT-quantity validation**, same pattern `ConfirmScanModal.tsx`
+  already uses: `ScanInventoryPage` now receives an `items?: InventoryItem[]`
+  prop (`App.tsx` passes `storageState.items`), matches each row's `sku`
+  against the item at the page's currently-selected location, and compares
+  the row's `quantity` to that item's `availableQuantity`. Rows with no
+  resolved `sku` (the Section 10 catalog-gap classes) can't be checked this
+  way — they're treated as unbounded here since they'd be skipped by
+  `App.tsx` regardless of action.
+  - An inline red warning renders directly under any offending row
+    ("Cannot remove N — only M available at *Location*").
+  - The **Confirm & Update Inventory** button is disabled (not just visually
+    warned) while any row is over its available quantity, so an over-limit
+    OUT can't be submitted — this is a client-side convenience only; the
+    server's own check in `record_transaction_firestore()` is still the real
+    guard, unchanged by this feature.
+- **Summary text no longer implies one big addition.** The header pill and
+  the confirm button both now show an IN/OUT breakdown (e.g. `3 IN · 2 OUT`)
+  instead of one combined `"X Units"` total whenever both actions are
+  present in the list; falls back to a plain unit count if the list is
+  IN-only (unchanged from before) or empty.
+- **`App.tsx`'s `handleScanConfirmed`** now reads `det.action` per item
+  instead of hardcoding `'IN'` when building each `TransactionPayload`.
+  `qty_changed` is unchanged — still the positive magnitude for both IN and
+  OUT (the server negates internally for OUT, per the contract documented in
+  Section 9). The existing `Promise.all` per-item success/failure handling
+  and honest partial-failure toasts from Section 10 are untouched; the
+  success/skip toasts were additionally updated to show an IN/OUT breakdown
+  (e.g. "Logged 3 IN · 2 OUT at ...") instead of a flat unit count, for the
+  same reason as the page's own summary text.
+- **The manual-add dropdown gets this for free**: manually-added rows render
+  through the exact same `confirmedItems` list and row component as detected
+  rows, so the IN/OUT toggle, warning, and totals all apply to them
+  automatically — no separate change was needed for that path.
+
+### Testing performed
+
+- `npx tsc --noEmit` — no new errors beyond the same 3 pre-existing, unrelated
+  ones (`AuthPage.tsx`, `StockCheckPage.tsx` ×2). One new error this change
+  introduced was fixed along the way: `new Map(prev.map(...))` in the webcam
+  loop inferred a widened `unknown` value type for the carried-over `action`,
+  fixed by typing it explicitly as `Map<string, 'IN' | 'OUT'>`.
+- `npx vite build` — production build succeeds (pre-existing chunk-size
+  warnings for the TF model bundle, unrelated to this change).
+- **Verified the IN/OUT payload wiring against real Firestore**, calling
+  `record_transaction_firestore()` directly (the same function
+  `/api/inventory/transaction` calls, and what `App.tsx`'s per-item
+  `postTransaction()` calls end up hitting) against an isolated test
+  SKU/store (`TEST-SKU-INOUT-9001` / `Test-Harness-Location`, seeded at
+  qty=100/avail=100 and deleted afterward — no real inventory touched):
+  - IN, qty_changed=7 → `new_qty=107`, `new_avail_qty=107`. Confirmed by an
+    independent Firestore read after the write, not just the function's
+    return value.
+  - OUT (same doc, same batch), qty_changed=4 → `new_qty=107` (physical qty
+    untouched by OUT, as designed), `new_avail_qty=103`. Also confirmed by
+    an independent Firestore read.
+  - OUT exceeding available, qty_changed=9999 (> 103 available) → raised
+    `ValueError: Insufficient available stock for OUT: requested 9999,
+    available 103.`, and the Firestore document was confirmed unchanged
+    (107/103) afterward — the rejection didn't partially apply.
+  - All 15 checks passed. This exercises exactly the one-IN-one-OUT-in-the-
+    same-confirmed-list scenario the task called for, at the layer below the
+    UI.
+- **Not tested**: the actual browser click-path — toggling a row to OUT in
+  the live confirmation list, seeing the inline warning appear/disappear as
+  quantity changes, the button actually being disabled, and the resulting
+  Firestore change after a real Confirm click. No browser automation tool is
+  available in this environment. See manual test steps below.
+
+### Manual browser test steps (do this to confirm end-to-end)
+
+1. Start both servers: `python database/app.py` and `npm run dev`. Log in as
+   `adam` / `password123`.
+2. Go to **Scan Inventory**. Switch to **Upload Image** (simpler than webcam
+   for a controlled test) and use **Add Item Manually** to add two different
+   items that both have a real product mapping (avoid the Section 10
+   catalog-gap classes — e.g. anything that isn't `bag_arduino_20`,
+   `bag_arduino_30`, `bundle_arduino`, `box sticky note`, `cup_rim`,
+   `full_cup`).
+3. On the first item's row, confirm the IN/OUT pill defaults to **IN**
+   (emerald, selected) — this is the "preserves current behavior as the
+   default" check.
+4. On the second item's row, click **OUT** (rose). Confirm the pill switches
+   and the first item's pill is unaffected.
+5. Set the second item's quantity (via the +/- stepper) higher than its
+   available stock (check the Inventory page first for that item's current
+   Available count at this location). Expect: a red inline warning appears
+   under that row ("Cannot remove N — only M available at ..."), and the
+   **Confirm & Update Inventory** button becomes disabled/greyed out with a
+   red notice above it.
+6. Lower the quantity back to at or below the available amount. Expect: the
+   warning disappears and the button re-enables.
+7. Check the header pill and the button label both show something like `1
+   IN · 1 OUT` (not a single combined unit count).
+8. Click **Confirm & Update Inventory**. Expect a "Scan Committed" toast
+   whose message shows the IN/OUT breakdown, then check the Inventory page:
+   the IN item's Quantity/Available both went up by its amount, the OUT
+   item's Available went down by its amount with Quantity unchanged.
+9. Repeat step 5's over-limit case but via the **webcam** tab with the
+   camera running: switch a live-detected row to OUT, confirm the warning
+   stays up (and the value doesn't snap back to IN) across multiple
+   detection frames while the camera keeps running.
+10. Confirm in the Firebase console (`petrosainsteamb` → Firestore Database
+    → `store_inventory`) that the `qty`/`avail_qty` for both SKUs' documents
+    match what the UI showed, and restore them afterward if this was real
+    inventory data.
