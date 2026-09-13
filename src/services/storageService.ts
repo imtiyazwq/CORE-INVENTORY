@@ -1,5 +1,5 @@
 // src/services/storageService.ts
-import { db } from './firebase';
+import { db, authReady } from './firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import {
   InventoryItem,
@@ -210,6 +210,7 @@ class StorageService {
     try {
       if (USE_FIREBASE) {
         console.log('[StorageService] Fetching from Firebase Firestore...');
+        await authReady; // Firestore rules require an (anonymous) auth session to read
         const snapshot = await getDocs(collection(db, 'store_inventory'));
         const fbItems: InventoryItem[] = snapshot.docs.map((docSnap) => {
           const row = docSnap.data();
@@ -329,7 +330,9 @@ class StorageService {
       return;
     }
 
-    // Attempt live POST
+    // Attempt live POST — writes always go through Flask, which uses the Firebase
+    // Admin SDK to update Firestore server-side when USE_FIREBASE is enabled there.
+    // (Firestore security rules block client-side writes entirely.)
     try {
       const res = await fetch('/api/inventory/transaction', {
         method: 'POST',

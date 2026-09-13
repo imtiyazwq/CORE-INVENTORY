@@ -24,7 +24,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from inventory_manager import process_sync_queue, record_transaction
+from inventory_manager import (
+    process_sync_queue,
+    record_transaction,
+    record_transaction_firestore,
+    USE_FIREBASE,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "core-inventory-secret-key-2026")
@@ -220,7 +225,8 @@ def inventory_transaction():
     user_id = session["user_id"]
 
     try:
-        result = record_transaction(
+        transact = record_transaction_firestore if USE_FIREBASE else record_transaction
+        result = transact(
             sku=sku,
             store_name=store_name,
             user_id=user_id,

@@ -1,0 +1,26 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // store_inventory: reads require a Firebase Auth session (even an anonymous
+    // one — see src/services/firebase.ts's signInAnonymously() call). This is
+    // NOT tied to the app's Flask login; it only blocks direct, unauthenticated
+    // scraping of the Firestore REST/SDK endpoint by clients that never load
+    // the app at all.
+    //
+    // Writes are blocked for every client, always. All inventory writes go
+    // through Flask's POST /api/inventory/transaction, which uses the Firebase
+    // Admin SDK (database/inventory_manager.py's record_transaction_firestore())
+    // — the Admin SDK bypasses these rules entirely, so this "if false" is a
+    // real, hard block on any client-side write attempt.
+    match /store_inventory/{docId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Default-deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

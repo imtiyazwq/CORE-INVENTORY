@@ -12,10 +12,36 @@ YOLO / computer-vision helpers have been removed.
 """
 
 import json
+import os
 import sqlite3
 from typing import Any, Dict, Optional
 
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 from init_db import get_db_connection, DB_PATH
+
+# Single source of truth for whether inventory writes target Firestore (via the
+# Admin SDK) or the local SQLite store_inventory table. Mirrors the frontend's
+# VITE_USE_FIREBASE flag — keep both in sync manually, they're separate runtimes.
+USE_FIREBASE = os.environ.get("USE_FIREBASE", "true").strip().lower() == "true"
+
+_FIRESTORE_SERVICE_ACCOUNT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "petrosainsteamb-firebase-adminsdk-fbsvc-e4494b1913.json",
+)
+_firestore_client = None
+
+
+def _get_firestore_client():
+    """Lazily initialize the Firebase Admin SDK and return a Firestore client."""
+    global _firestore_client
+    if _firestore_client is None:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(_FIRESTORE_SERVICE_ACCOUNT)
+            firebase_admin.initialize_app(cred)
+        _firestore_client = firestore.client()
+    return _firestore_client
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +178,118 @@ def record_transaction(
 
 
 # ---------------------------------------------------------------------------
+# record_transaction_firestore
+# ---------------------------------------------------------------------------
+
+def record_transaction_firestore(
+    sku: str,
+    store_name: str,
+    user_id: str,
+    action: str,
+    qty_changed: int,
+    db_path: str = DB_PATH,
+) -> Dict[str, Any]:
+    """
+    Same contract as record_transaction(), but the store_inventory document of
+    record lives in Firestore (updated via the Admin SDK, inside a Firestore
+    transaction for atomicity) instead of the local SQLite store_inventory table.
+
+    The inventory_logs audit trail entry is still written to SQLite — the
+    frontend never reads that table directly, so keeping it local is low-risk
+    and preserves operator accountability without migrating that table too.
+    """
+    if action not in ("IN", "OUT", "ADJUSTMENT"):
+        raise ValueError(f"Invalid action '{action}'. Must be IN, OUT, or ADJUSTMENT.")
+
+    db = _get_firestore_client()
+    doc_id = f"{sku}_{store_name}".replace(" ", "_")
+    doc_ref = db.collection("store_inventory").document(doc_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> Dict[str, Any]:
+        snapshot = doc_ref.get(transaction=transaction)
+        if not snapshot.exists:
+            raise ValueError(
+                f"No Firestore inventory document found for SKU='{sku}' / store='{store_name}' "
+                f"(doc_id='{doc_id}')."
+            )
+
+        data = snapshot.to_dict()
+        current_qty = data.get("qty", 0)
+        current_avail_qty = data.get("avail_qty", 0)
+
+        if action == "IN":
+            new_qty       = current_qty + qty_changed
+            new_avail_qty = current_avail_qty + qty_changed
+            signed_delta  = qty_changed
+        elif action == "OUT":
+            if qty_changed > current_avail_qty:
+                raise ValueError(
+                    f"Insufficient available stock for OUT: "
+                    f"requested {qty_changed}, available {current_avail_qty}."
+                )
+            new_qty       = current_qty
+            new_avail_qty = current_avail_qty - qty_changed
+            signed_delta  = -qty_changed
+        else:  # ADJUSTMENT
+            new_qty       = max(0, current_qty + qty_changed)
+            new_avail_qty = max(0, current_avail_qty + qty_changed)
+            signed_delta  = qty_changed
+
+        new_status = "Available" if new_avail_qty > 0 else "Out of Stock"
+
+        transaction.update(doc_ref, {
+            "qty": new_qty,
+            "avail_qty": new_avail_qty,
+            "status": new_status,
+        })
+
+        return {
+            "new_qty": new_qty,
+            "new_avail_qty": new_avail_qty,
+            "status": new_status,
+            "signed_delta": signed_delta,
+        }
+
+    result = _apply(db.transaction())
+
+    # Audit trail — still local SQLite, same table Flask always logged to.
+    # Firestore is already the committed source of truth at this point, so a
+    # logging failure here must not surface as a transaction failure to the
+    # caller (that would misreport a change that did happen as having failed).
+    try:
+        conn = get_db_connection(db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO inventory_logs (sku, store_name, user_id, action, qty_changed)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (sku, store_name, user_id, action, result["signed_delta"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[Inventory/Firestore] Warning: failed to write audit log for {doc_id}: {exc}")
+
+    print(
+        f"[Inventory/Firestore] {action} | SKU={sku} | store={store_name} | "
+        f"delta={result['signed_delta']:+d} | new_qty={result['new_qty']} avail={result['new_avail_qty']}"
+    )
+
+    return {
+        "sku":           sku,
+        "store_name":    store_name,
+        "action":        action,
+        "qty_changed":   result["signed_delta"],
+        "new_qty":       result["new_qty"],
+        "new_avail_qty": result["new_avail_qty"],
+        "status":        result["status"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # process_sync_queue
 # ---------------------------------------------------------------------------
 
@@ -210,8 +348,9 @@ def process_sync_queue(
 
             try:
                 payload = json.loads(item["payload_json"])
+                transact = record_transaction_firestore if USE_FIREBASE else record_transaction
 
-                record_transaction(
+                transact(
                     sku        = payload["sku"],
                     store_name = payload["store_name"],
                     user_id    = payload.get("user_id", "system"),
