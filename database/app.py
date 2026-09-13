@@ -53,10 +53,12 @@ CORS(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        # PLACEHOLDER — once the frontend is deployed on Vercel, replace this
-        # line with the real URL, e.g. "https://core-inventory.vercel.app"
-        # (no trailing slash). See PROJECT_STATUS.md's deployment section.
-        "https://REPLACE-WITH-VERCEL-URL.vercel.app",
+        # Live Vercel deployment. NOTE: Vercel mints a new *-<hash>.vercel.app
+        # URL on some redeploys — if login starts CORS-failing again after a
+        # future redeploy, this is very likely why; add the new URL here.
+        # See PROJECT_STATUS.md's deployment section for the *.vercel.app
+        # wildcard / custom-domain alternatives to avoid repeating this.
+        "https://core-inventory-jagc6a8fm-idek7.vercel.app",
     ],
 )
 DB_PATH = os.path.join(BASE_DIR, "inventory_system.db")
