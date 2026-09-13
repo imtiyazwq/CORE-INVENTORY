@@ -772,3 +772,312 @@ for.
     → `store_inventory`) that the `qty`/`avail_qty` for both SKUs' documents
     match what the UI showed, and restore them afterward if this was real
     inventory data.
+
+---
+
+## 12. Fix + Route: StockCheckPage.tsx (2026-09-13)
+
+**Fixes the two blockers a prior investigation found before routing this
+page**: it didn't compile (`StockCheckRecord`/`StockCheckItem` weren't
+exported anywhere), and even if it had, its Expected-vs-Detected comparison
+matched on `it.name` / `d.className` string equality — the exact
+naming-mismatch bug [Section 10](#10-root-cause-fix-classname--sku-identity-2026-09-13)
+fixed in `ScanInventoryPage.tsx`, reintroduced in a second place. Confirming
+on, otherwise nothing would have actually reconciled correctly once routed.
+
+### What was built
+
+- **`StockCheckRecord` / `StockCheckItem` added to `src/types/index.ts`**,
+  matching exactly what `StockCheckPage.tsx` already expected structurally
+  (this was the pre-existing `tsc --noEmit` error — fixed by adding the real
+  types, not by loosening/silencing anything). `StockCheckItem` gained two
+  fields the page didn't have before: `sku: string | null` and `isNew?:
+  boolean` (see below). `StockCheckRecord` gained `appliedToInventory?:
+  boolean` — whether "Synchronize inventory" was checked when this record
+  was confirmed, i.e. whether it actually wrote anything.
+- **`ScanRecord.itemsDetected` gained an optional `sku?: string | null`
+  field.** This was already being *passed* at runtime — `App.tsx`'s
+  `handleScanConfirmed` stores `data.confirmedItems` (which carries `sku`
+  since Section 10) straight into `addScanRecord()` — the type just never
+  declared it, so `StockCheckPage.tsx` had no typed way to read it back out.
+- **The Expected-vs-Detected comparison in `StockCheckPage.tsx` now matches
+  by SKU, not by name/className**:
+  - **Expected** side: `InventoryItem[]` filtered by location, keyed by
+    `it.itemCode` (already the real SKU — no lookup needed).
+  - **Detected** side: each `activeScan.itemsDetected` entry resolves to a
+    SKU via the *exact* primary/fallback pattern `App.tsx`'s
+    `handleScanConfirmed` already uses — prefer the `sku` stored on the
+    detection itself (present on scans recorded since Section 10), fall back
+    to re-resolving via `DEFAULT_YOLO_LABELS`/`YOLO_CLASS_SKUS` (the same
+    hand-verified table, reused rather than re-derived) for older scan
+    records that predate that field.
+  - A className that resolves to no SKU at all (e.g. `bag_arduino_20`, one
+    of Section 10's 6 no-mapping classes) is **kept visible in its own
+    bucket, never silently dropped** — shown with `sku: null` and an
+    "Unmapped" badge, but permanently ineligible for reconciliation, matching
+    how `ScanInventoryPage.tsx` already treats such items.
+  - `manualDetectedOverrides` (the per-row manual-recount input) is now
+    keyed by a stable `rowKey()` — the sku, or a namespaced key on the
+    className for unmapped rows — instead of the display name, so the
+    override can't collide with an unrelated item that happens to share a
+    name.
+- **New `isNew` concept**: a row where a SKU *was* resolved from a detection,
+  but no `InventoryItem` exists for that `(sku, location)` pair at all —
+  i.e. this product has never been formally stocked at this location, so
+  there's nothing to compare the detection against ("expected" is 0 because
+  there's genuinely no record, not because a zero count was confirmed).
+  Flagged in the UI with an amber "New" badge, and — critically — **excluded
+  from auto-reconciliation entirely** (see below and the flagged decision
+  point).
+- **`handleStockCheckConfirmed` implemented in `App.tsx`**, reusing
+  `storageService.postTransaction()` — the exact same pipeline
+  `handleScanConfirmed` and `ConfirmScanModal.tsx` already use, no separate
+  write path:
+  - Only rows where `variance !== 0` (a real discrepancy) **and** `sku !==
+    null` **and** `isNew !== true` are eligible. Each eligible row fires one
+    `ADJUSTMENT` transaction with `qty_changed = variance` (the signed
+    delta — matches the ADJUSTMENT contract from Section 9: positive
+    increases, negative decreases, and unlike IN/OUT it moves **both**
+    `quantity` and `availableQuantity`).
+  - `applyToInventory` (the page's "Synchronize inventory records with
+    physical detected counts" checkbox) is respected literally: **false
+    means nothing is written at all** — the result is still reported via
+    toast (matched-count / discrepancy-count / what would need manual
+    review), it just never calls `postTransaction()`.
+  - Per-item success/failure is tracked via `Promise.all`, same honest
+    partial-failure toast pattern as `handleScanConfirmed` — a failed
+    ADJUSTMENT (e.g. a race with another transaction) doesn't get folded
+    into a false "success" for the whole check.
+  - Rows excluded for being `isNew` or unmapped are always named in a
+    separate warning toast, every time, regardless of `applyToInventory` —
+    so "this needs a manual decision" is never silently swallowed the way
+    the *original* pre-fix bug silently swallowed unmatched scan items.
+- **Routed** into `Sidebar.tsx` (`PageId` gained `'stockcheck'`, new "Stock
+  Check" nav item using `ClipboardCheck`) and `App.tsx` (new `activePage ===
+  'stockcheck'` branch, passing `items`, `scanHistory`,
+  `onConfirmStockCheck={handleStockCheckConfirmed}`, and
+  `onNavigateToScan={handleNavigateToScanWithLocation}` — an existing helper
+  that was already defined in `App.tsx` but never wired to anything before
+  this). Fixed one knock-on compile error this surfaced: `HeaderBar.tsx`'s
+  `PAGE_TITLES` record is typed `Record<PageId, string>`, so adding
+  `'stockcheck'` to `PageId` required adding its title there too.
+
+### The `isNew` decision point — flagged for you, not decided here
+
+**What I found these rows actually need, concretely:** creating a new
+`store_inventory` record isn't just a frontend decision — **neither backend
+function supports it.** I confirmed this directly: calling
+`record_transaction_firestore()` (or its SQLite counterpart) against a
+`(sku, store_name)` pair with no existing document raises
+`ValueError: No Firestore inventory document found for SKU='...' /
+store='...'` and creates nothing, by design (`doc_ref.get()` inside the
+Firestore transaction, then `.update()` — never `.set()` on a missing doc).
+So finishing this would require:
+1. **A business decision first**: is a detection at a location with no
+   existing record actually "this item is now stocked here for the first
+   time," or is it more likely "the scan/location was wrong"? Those call for
+   different UI (silently seed a row vs. surface a hard warning to double
+   check the scan).
+2. **If seeding is the right call**: a genuinely new backend code path —
+   something like a `record_transaction_firestore()` sibling that `.set()`s
+   a fresh doc (`qty`/`avail_qty` = the detected count, `status`
+   derived same as the existing functions) instead of updating one, since
+   the existing functions explicitly refuse to do this.
+3. **Deciding the initial values**: is a first-ever detected count of, say,
+   9 units the full physical `qty`, or could some already be checked out
+   elsewhere (`avail_qty` < `qty`)? A stock check has no way to know that —
+   it can only ever assume `qty == avail_qty` for a brand-new row.
+
+Until that's decided, `isNew` rows stay visible (never hidden, matching this
+fix's whole point), clearly badged, explicitly named in a warning toast on
+every confirm, and **never** auto-adjusted or auto-created.
+
+### Testing performed
+
+- `npx tsc --noEmit` — the two pre-existing `StockCheckPage.tsx`-related
+  errors (`StockCheckRecord`/`StockCheckItem` not exported) are gone; no new
+  errors beyond the one pre-existing, unrelated `AuthPage.tsx` one. One
+  knock-on error was fixed along the way (`HeaderBar.tsx`'s `PAGE_TITLES`,
+  see above).
+- `npx vite build` — production build succeeds.
+- **Matching-logic verified standalone**, before routing anything: ported
+  the exact `verificationRows` algorithm (copied verbatim, not
+  reimplemented-from-memory) into a script run via `tsx`, importing the
+  *real* `yoloConfig.ts` (`YOLO_CLASS_SKUS`/`YOLO_CLASS_CATEGORIES` — the
+  actual hand-verified source of truth). 15 checks, all passed, covering:
+  - **NodeMCU, exactly the case asked for**: a fresh detection carrying
+    `sku: 'E006'` correctly matches the `NodeMCU` catalog row (by SKU, not
+    name) and computes Matched/Short correctly.
+  - **NodeMCU again, but simulating an *older* scan record with no stored
+    `sku` field** — confirms the `DEFAULT_YOLO_LABELS` fallback resolves
+    `'nodemcu esp32' -> 'E006'` correctly even without it.
+  - An explicit regression check that `'NodeMCU' === 'nodemcu esp32'` is
+    `false` — the concrete proof the old logic would have missed this exact
+    case.
+  - One Match, one Short (by 4), one Extra (by 3) in the same location/scan
+    — all three computed correctly.
+  - An `isNew` case (resolvable SKU, no inventory row at that location) and
+    an unmapped-class case (`bag_arduino_20`, `sku: null`) — both produce a
+    visible row with the right flags, neither silently dropped.
+- **ADJUSTMENT reconciliation verified against real Firestore**, calling
+  `record_transaction_firestore()` directly (the same function
+  `/api/inventory/transaction` calls, and what `handleStockCheckConfirmed`'s
+  `postTransaction()` calls end up hitting) against three isolated test
+  docs (`TEST-SKU-SC-MATCH/SHORT/EXTRA_Test-Harness-StockCheck`, deleted
+  afterward — no real inventory touched):
+  - **Match** (expected=20, detected=20, variance=0): confirmed **no
+    transaction is fired at all** — `handleStockCheckConfirmed`'s own
+    `variance !== 0` filter means this row never reaches `postTransaction`
+    — doc verified unchanged (20/20).
+  - **Short** (expected=20, detected=15, variance=-5): `ADJUSTMENT`
+    qty_changed=-5 → `new_qty=15`, `new_avail_qty=15` (both moved, per the
+    ADJUSTMENT contract) — confirmed via an independent Firestore read.
+  - **Extra** (expected=5, detected=9, variance=+4): `ADJUSTMENT`
+    qty_changed=+4 → `new_qty=9`, `new_avail_qty=9` — confirmed via an
+    independent Firestore read.
+  - Confirmed that after reconciliation, each row's new `avail_qty` now
+    equals what was originally detected — i.e. a second Stock Check against
+    the same detection would now show Matched.
+  - All 12 checks passed.
+- **`isNew`'s backend behavior confirmed directly**, not just inferred:
+  called `record_transaction_firestore()` with `ADJUSTMENT` against a
+  `(sku, store)` pair with no existing document — raised the `ValueError`
+  quoted above, and confirmed via an independent read that no document was
+  created as a side effect, before or after.
+- **Not tested**: the actual browser click-path (running a real scan,
+  opening Stock Check, confirming a mixed Match/Short/Extra check end-to-end
+  through the UI, watching the toast and the Inventory page update). No
+  browser automation tool is available in this environment. See manual test
+  steps below.
+
+### Manual browser test steps (do this to confirm end-to-end)
+
+1. Start both servers: `python database/app.py` and `npm run dev`. Log in as
+   `adam` / `password123`.
+2. Pick a location and a real, mapped item (avoid the Section 10 catalog-gap
+   classes). On **Inventory**, note that item's current Quantity/Available —
+   you'll restore it afterward if this is real data.
+3. Go to **Scan Inventory**, confirm a scan at that location for that item
+   with a quantity **different** from its current Available count (e.g. if
+   Available is 10, manually add/confirm 7 — simulating a physical recount
+   that's short by 3). Confirm the scan (this also becomes the "Detected"
+   source for Stock Check).
+4. Go to the new **Stock Check** nav item (should now appear in the
+   sidebar). Select the same location. Confirm the item shows: Expected =
+   the pre-scan Available count, Detected = what you just confirmed,
+   Status = **Short**, with the SKU printed under the item name.
+5. Leave **"Synchronize inventory records with physical detected counts"**
+   **unchecked** and click **Confirm Stock Check**. Expect: an info toast
+   ("Stock Check Reviewed — Not Applied") and the Inventory page's numbers
+   **unchanged** — confirm this by checking Inventory or Firestore directly.
+6. Run another scan/manual-add at the same location for a *different* item,
+   this time confirming **more** than its current Available (simulating an
+   Extra). Repeat step 4 — this row should show Status = **Extra**.
+7. This time, **check** "Synchronize inventory records..." and click
+   **Confirm Stock Check**. Expect a success (or partial-success) toast
+   naming what was adjusted. Check Inventory/Firestore: the Short item's
+   Available should now equal what was detected, and same for the Extra
+   item — both Quantity **and** Available should have moved (unlike IN/OUT,
+   which only move Available).
+8. If you have (or can simulate) a detection for an item never stocked at
+   that location at all, confirm it shows the amber **"New"** badge, is
+   excluded from the adjustment even with the checkbox on, and is named in
+   a separate warning toast.
+9. If a scan ever detects one of the 6 no-mapping classes
+   (`bag_arduino_20`, `bag_arduino_30`, `bundle_arduino`, `box sticky note`,
+   `cup_rim`, `full_cup`), confirm it shows the grey **"Unmapped"** badge
+   and behaves the same way — visible, never adjusted.
+10. Confirm in the Firebase console (`petrosainsteamb` → Firestore Database
+    → `store_inventory`) that both adjusted documents' `qty`/`avail_qty`
+    match the UI, and restore both items to their original values afterward
+    if this was real inventory data.
+
+---
+
+## 13. Investigation: Stock Check "only shows 8 items" (2026-09-13)
+
+**Investigation only, per explicit instruction — nothing was changed.**
+
+Checked the real per-location item counts directly against live Firestore
+(`store_inventory`, 109 docs total, one per `(sku, location)` pair, no
+duplicates found):
+
+| Location | Real item count |
+|---|---|
+| STORE 1 | 50 |
+| MAKER STUDIO | 30 |
+| CHILLAX | 22 |
+| CHEMICAL ROOM | 7 |
+
+**No slicing, pagination, or artificial limit exists anywhere in the
+pipeline.** Grepped `StockCheckPage.tsx` and the rest of `src/` for
+`.slice(`, `.limit(`, or any cap on the items/inventory arrays — the only
+`.slice(...)` calls anywhere are unrelated date-string formatting
+(`toISOString().slice(0, 10)`) and `DashboardPage.tsx`'s own
+`recentScans`/`lowStockItems` widgets (deliberately capped at 4-5 for a
+dashboard card, and irrelevant to Stock Check). `fetchInventory()`'s
+Firestore read is a plain `getDocs(collection(db, 'store_inventory'))` with
+no `.limit()`. `verificationRows`' `expectedMap` is built from every
+`InventoryItem` matching the selected location, full stop.
+
+**Conclusion: 8 is very likely correct, not a bug — but for a specific
+reason worth flagging.** `VALID_LOCATIONS[0]` is `'CHEMICAL ROOM'`, the
+**default** location `StockCheckPage.tsx` loads with (`useState<ValidLocation>(VALID_LOCATIONS[0])`).
+CHEMICAL ROOM has exactly **7** real items. If the active scan for that
+location detected one additional SKU not already stocked there (an `isNew`
+row — e.g. `goggles` → `L019`, which isn't among CHEMICAL ROOM's 7 items) or
+one unmapped class, the table would show exactly **7 + 1 = 8** rows. That
+extra row showing up at all is the *Section 12 fix working as designed* —
+surfacing a detection that doesn't match anything, rather than silently
+dropping it — not a defect.
+
+**What this doesn't rule out, and what to check next:** I can't inspect the
+live browser session, so I can't confirm which location was actually
+selected, whether an active scan was in play, or whether `storageState.items`
+was fully populated at the time (e.g. a `fetchInventory()` Firestore call
+that failed silently — it's wrapped in `try/catch` and falls back to
+whatever's cached, with only a `console.warn`, no visible UI error — would
+leave stale/partial data with no on-screen indication anything went wrong).
+**Before treating this as closed**: confirm which location the location
+dropdown was actually set to when 8 was observed. If it was CHEMICAL ROOM,
+this is expected behavior given real data, not a bug. If it was MAKER
+STUDIO, CHILLAX, or STORE 1 and still showed only 8, that contradicts
+everything found here and points at a runtime data-loading issue (stale
+cache / failed fetch) rather than a table-rendering bug — worth a fresh
+browser check with dev tools open (Network tab, and `console.warn` output)
+before writing any fix.
+
+---
+
+## 14. UI Change: "Adjust Stock" Button Hidden on InventoryPage.tsx (2026-09-13)
+
+**Per explicit instruction**: removed the "Adjust Stock" button from each
+row's Actions column in `InventoryPage.tsx` — the underlying feature
+([Section 9](#9-feature-manual-in--out--adjustment-stock-transactions-2026-09-13))
+is untouched and still fully present in the code, just not reachable from
+this button anymore.
+
+**What was removed**: only the `<button onClick={() => setAdjustModalItem(item)}>`
+JSX element itself (replaced with a one-line comment pointing here), and its
+now-dead `SlidersHorizontal` icon import.
+
+**What was deliberately left intact**, per instruction:
+- `adjustModalItem` / `setAdjustModalItem` state — still declared, just has
+  no remaining caller in this file.
+- The `<ConfirmScanModal item={adjustModalItem} .../>` render block — still
+  present, will still render correctly if `adjustModalItem` is ever set by
+  some other future trigger.
+- `onStockAdjusted` prop and its `App.tsx`-side `handleStockAdjusted` handler
+  — untouched.
+- `storageService.postTransaction()` and the entire IN/OUT/ADJUSTMENT
+  backend pipeline — completely unaffected; this was a UI-only change.
+
+**Testing performed**: `npx tsc --noEmit` — no new errors (same one
+pre-existing, unrelated `AuthPage.tsx` error). Confirmed nothing else in the
+codebase references this specific button or depends on it being present.
+`npx vite build` — production build still succeeds.
+
+**Not tested**: the actual browser click-path (confirming the button is
+visually gone from the Inventory table, and that the rest of the row's
+actions — Check Out/Check In — still render normally). No browser
+automation tool is available in this environment.

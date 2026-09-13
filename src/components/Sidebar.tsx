@@ -8,6 +8,7 @@ import {
   Database,
   Wifi,
   WifiOff,
+  ClipboardCheck,
 } from 'lucide-react';
 import { VALID_LOCATIONS } from '../data/locations';
 
@@ -15,6 +16,7 @@ export type PageId =
   | 'dashboard'
   | 'inventory'
   | 'scan'
+  | 'stockcheck'
   | 'history'
   | 'settings';
 
@@ -42,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'scan', label: 'Scan Inventory', icon: ScanLine },
     { id: 'inventory', label: 'Inventory', icon: Boxes, badge: totalAssetsCount },
+    { id: 'stockcheck', label: 'Stock Check', icon: ClipboardCheck },
     { id: 'history', label: 'Activity / History', icon: History },
     { id: 'settings', label: 'Settings', icon: Settings, badge: pendingCount > 0 ? `${pendingCount} queue` : undefined },
   ];

@@ -4,12 +4,13 @@ import { HeaderBar } from './components/HeaderBar';
 import { DashboardPage } from './pages/DashboardPage';
 import { InventoryPage } from './pages/InventoryPage';
 import { ScanInventoryPage } from './pages/ScanInventoryPage';
+import { StockCheckPage } from './pages/StockCheckPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuthPage } from './components/AuthPage.tsx';
 import { storageService, StorageState, TransactionPayload } from './services/storageService';
 import { authService } from './services/authService';
-import { ValidLocation, ModelConfig, UserAccount } from './types';
+import { ValidLocation, ModelConfig, UserAccount, StockCheckRecord } from './types';
 import { VALID_LOCATIONS } from './data/locations';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
@@ -212,6 +213,104 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
+  // handleStockCheckConfirmed — StockCheckPage's "Confirm Stock Check"
+  //
+  // Reuses the exact same postTransaction() pipeline as handleScanConfirmed —
+  // no separate write path. Every discrepant row (detected != expected) that
+  // has a resolved sku AND an existing store_inventory row for it at this
+  // location fires one ADJUSTMENT transaction with qty_changed = variance
+  // (the signed delta, matching the ADJUSTMENT contract), bringing the system
+  // quantity to match what was physically detected.
+  //
+  // Rows with sku === null (no product mapping at all) or isNew === true (a
+  // resolvable sku with no existing inventory row at this location) are
+  // ALWAYS excluded — never auto-adjusted, never auto-created. Creating a new
+  // store_inventory row isn't something record_transaction_firestore() (or
+  // its SQLite counterpart) supports; they explicitly raise if the row
+  // doesn't exist. See PROJECT_STATUS.md for what actually finishing that
+  // would require.
+  //
+  // If applyToInventory is false, nothing is written — the check is still
+  // reported via toast so it's "viewable/reportable" per the page's own
+  // checkbox copy, it just doesn't touch the backend.
+  // ---------------------------------------------------------------------------
+
+  const handleStockCheckConfirmed = async (
+    record: Omit<StockCheckRecord, 'id' | 'timestamp'>,
+    applyToInventory?: boolean,
+  ) => {
+    const discrepantRows = record.items.filter((it) => it.variance !== 0);
+    const eligibleRows   = discrepantRows.filter((it) => it.sku !== null && !it.isNew);
+    const skippedRows    = discrepantRows.filter((it) => it.sku === null || it.isNew);
+
+    const skippedNote = skippedRows.length > 0
+      ? `${skippedRows.length} row(s) need a manual decision and were skipped: ${skippedRows
+          .map((r) => `${r.name} (${r.sku === null ? 'unmapped class' : 'no existing record at this location'})`)
+          .join('; ')}.`
+      : null;
+
+    if (!applyToInventory) {
+      if (discrepantRows.length === 0) {
+        addToast('success', 'Stock Check Reviewed', `All ${record.matchedCount} items at ${record.location} matched. Nothing to adjust.`);
+      } else {
+        addToast(
+          'info',
+          'Stock Check Reviewed (Not Applied)',
+          `${discrepantRows.length} discrepancy(ies) noted at ${record.location}. "Synchronize inventory" was unchecked — nothing was written. Re-run with it checked to post the adjustments.`,
+        );
+      }
+      if (skippedNote) addToast('warning', 'Some Rows Need Manual Review', skippedNote);
+      return;
+    }
+
+    if (eligibleRows.length === 0) {
+      if (discrepantRows.length === 0) {
+        addToast('success', 'Stock Check Applied', `All ${record.matchedCount} items at ${record.location} matched. Nothing to adjust.`);
+      } else {
+        addToast('warning', 'Stock Check Not Applied', `All ${discrepantRows.length} discrepancy(ies) at ${record.location} need a manual decision — none could be auto-adjusted.`);
+      }
+      if (skippedNote) addToast('warning', 'Some Rows Need Manual Review', skippedNote);
+      return;
+    }
+
+    const results = await Promise.all(
+      eligibleRows.map(async (row) => {
+        const txn: TransactionPayload = {
+          sku:         row.sku as string,
+          store_name:  record.location,
+          action:      'ADJUSTMENT',
+          qty_changed: row.variance, // signed delta: positive increase, negative decrease
+        };
+
+        try {
+          const result = await storageService.postTransaction(txn);
+          if (!result.success) {
+            return { name: row.name, ok: false, reason: result.error || 'rejected by server' };
+          }
+          return { name: row.name, ok: true, reason: null as string | null };
+        } catch (err) {
+          console.warn('[App] handleStockCheckConfirmed: postTransaction error for', row.sku, err);
+          return { name: row.name, ok: false, reason: err instanceof Error ? err.message : 'unexpected error' };
+        }
+      }),
+    );
+
+    const succeeded = results.filter((r) => r.ok);
+    const failed    = results.filter((r) => !r.ok);
+
+    if (failed.length === 0) {
+      addToast('success', 'Stock Check Applied', `Adjusted ${succeeded.length} item(s) at ${record.location} to match the physical count.`);
+    } else if (succeeded.length === 0) {
+      addToast('warning', 'Stock Check Not Applied', `${failed.map((f) => `${f.name} (${f.reason})`).join('; ')}`);
+    } else {
+      addToast('success', 'Stock Check Partially Applied', `Adjusted ${succeeded.length} item(s) at ${record.location}: ${succeeded.map((s) => s.name).join(', ')}.`);
+      addToast('warning', 'Some Adjustments Failed', `${failed.map((f) => `${f.name} (${f.reason})`).join('; ')}`);
+    }
+
+    if (skippedNote) addToast('warning', 'Some Rows Need Manual Review', skippedNote);
+  };
+
+  // ---------------------------------------------------------------------------
   // Sync / Export / Import / Reset handlers
   // ---------------------------------------------------------------------------
 
@@ -330,6 +429,16 @@ export default function App() {
                 onCheckoutItem={handleCheckout}
                 onCheckinItem={handleCheckin}
                 onStockAdjusted={handleStockAdjusted}
+              />
+            )}
+
+            {activePage === 'stockcheck' && (
+              <StockCheckPage
+                items={storageState.items}
+                scanHistory={storageState.scanHistory}
+                onConfirmStockCheck={handleStockCheckConfirmed}
+                onNavigateToScan={handleNavigateToScanWithLocation}
+                currentUser={currentUser}
               />
             )}
 

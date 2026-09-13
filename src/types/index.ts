@@ -85,12 +85,65 @@ export interface ScanRecord {
     className: string;
     quantity: number;
     confidence: number;
+    // Real product SKU resolved at scan-confirm time (see yoloConfig.ts's
+    // YOLO_CLASS_SKUS). Optional because older scan records predate this
+    // field — StockCheckPage.tsx falls back to re-resolving from className
+    // via the same lookup table when it's missing.
+    sku?: string | null;
   }>;
   totalQuantity: number;
   status: 'Completed' | 'Confirmed' | 'Discrepancy Flagged';
   rawImagePreview?: string;
   previewUrl?: string;
   notes?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Stock Check — periodic per-location audit reconciling the inventory ledger
+// ("expected") against a confirmed scan's detections ("detected"). See
+// StockCheckPage.tsx. Matching is done by sku (not name/className) — see
+// PROJECT_STATUS.md's Section 10 for why a name/className match is unsafe.
+// ---------------------------------------------------------------------------
+
+export interface StockCheckItem {
+  // null means this row's className has no resolvable product mapping at
+  // all (see YOLO_CLASS_SKUS) — it can never be posted as a transaction.
+  sku: string | null;
+  name: string;
+  category: string;
+  expected: number;
+  detected: number;
+  // difference and variance are the same value (detected - expected); both
+  // are kept because StockCheckPage.tsx's UI already referred to it as
+  // "variance" while the audit-trail semantics are clearer as "difference".
+  difference: number;
+  variance: number;
+  status: 'Matched' | 'Short' | 'Extra';
+  // True when this sku was detected in the scan but has no existing
+  // store_inventory row for this location at all (expected implicitly 0
+  // because there's nothing to compare against, not because a count of 0
+  // was confirmed). These are deliberately excluded from auto-reconciliation
+  // — see PROJECT_STATUS.md's Section 12 "isNew" note.
+  isNew?: boolean;
+}
+
+export interface StockCheckRecord {
+  id: string;
+  timestamp: string;
+  location: ValidLocation;
+  operator: string;
+  user?: string;
+  team?: string;
+  matchedCount: number;
+  discrepancyCount: number;
+  confirmedAt: string;
+  notes?: string;
+  items: StockCheckItem[];
+  // Whether "synchronize inventory records with physical detected counts"
+  // was checked when this record was confirmed — i.e. whether discrepant
+  // rows actually got posted as ADJUSTMENT transactions, or this was a
+  // review-only pass.
+  appliedToInventory?: boolean;
 }
 
 export interface AuditAdjustmentRecord {

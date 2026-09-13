@@ -30,6 +30,7 @@ import {
 } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
 import { PageId } from '../components/Sidebar';
+import { DEFAULT_YOLO_LABELS } from '../services/modelService';
 
 interface StockCheckPageProps {
   items: InventoryItem[];
@@ -40,6 +41,10 @@ interface StockCheckPageProps {
 }
 
 interface VerificationRow {
+  // null means this row's className has no resolvable product mapping at
+  // all (see YOLO_CLASS_SKUS) — it's shown for visibility (so a detection
+  // never silently vanishes) but can never be reconciled to a transaction.
+  sku: string | null;
   name: string;
   category: string;
   expected: number;
@@ -48,7 +53,18 @@ interface VerificationRow {
   status: 'Matched' | 'Short' | 'Extra';
   originalDetected: number;
   isCustomAdjusted?: boolean;
+  // sku resolved, but no store_inventory row exists for (sku, location) at
+  // all — expected is implicitly 0 because there's nothing to compare
+  // against. Excluded from auto-reconciliation; see App.tsx's
+  // handleStockCheckConfirmed and PROJECT_STATUS.md's "isNew" note.
+  isNew: boolean;
 }
+
+// Stable key for React lists and manual-override lookups — sku when
+// resolvable, otherwise a namespaced key on the className so it can never
+// collide with a real sku.
+const rowKey = (row: { sku: string | null; name: string }): string =>
+  row.sku ?? `unmapped:${row.name}`;
 
 export const StockCheckPage: React.FC<StockCheckPageProps> = ({
   items,
@@ -95,55 +111,84 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
   }, [locationScans, selectedScanId]);
 
   // 4. Generate Ready-Made Expected vs Detected Comparison List
+  //
+  // Matched by SKU, not by item.name / d.className string equality — the
+  // same naming-mismatch bug Section 10 fixed in ScanInventoryPage.tsx would
+  // otherwise reappear here (Arduino_Uno vs Arduino Uno, nodemcu esp32 vs
+  // NodeMCU, etc.), falsely flagging most real stock as "Short"/"Extra"
+  // purely from label formatting, not an actual discrepancy.
   const verificationRows: VerificationRow[] = useMemo(() => {
-    // A. Expected inventory at this location
-    const expectedMap = new Map<string, { category: string; expected: number }>();
+    // A. Expected inventory at this location, keyed by SKU (itemCode) —
+    // InventoryItem is already SKU-identified, no lookup needed here.
+    const expectedMap = new Map<string, { name: string; category: string; expected: number }>();
     items
       .filter((it) => it.location === selectedLocation)
       .forEach((it) => {
-        const existing = expectedMap.get(it.name);
+        const existing = expectedMap.get(it.itemCode);
         if (existing) {
           existing.expected += it.availableQuantity;
         } else {
-          expectedMap.set(it.name, {
+          expectedMap.set(it.itemCode, {
+            name: it.name,
             category: it.category,
             expected: it.availableQuantity,
           });
         }
       });
 
-    // B. Detected items from the selected confirmed scan
-    const detectedMap = new Map<string, number>();
+    // B. Detected items from the selected confirmed scan, resolved to SKU.
+    // Same primary/fallback pattern as App.tsx's handleScanConfirmed: prefer
+    // the sku captured on the detection itself (present on scans recorded
+    // since Section 10's fix); fall back to re-resolving via the
+    // hand-verified YOLO_CLASS_SKUS table (through DEFAULT_YOLO_LABELS) for
+    // older scan records that predate that field. A className with no
+    // resolvable sku at all (e.g. bag_arduino_20) is kept in its own bucket
+    // — it must stay visible (never silently dropped, per Section 10's
+    // finding) but can never be matched against inventory or reconciled.
+    const detectedMap = new Map<string, { className: string; quantity: number }>();
+    const unresolvedMap = new Map<string, number>();
     if (activeScan && activeScan.itemsDetected) {
       activeScan.itemsDetected.forEach((d) => {
-        const current = detectedMap.get(d.className) || 0;
-        detectedMap.set(d.className, current + d.quantity);
+        const sku = d.sku ?? DEFAULT_YOLO_LABELS.find((l) => l.label === d.className)?.sku ?? null;
+        if (!sku) {
+          unresolvedMap.set(d.className, (unresolvedMap.get(d.className) || 0) + d.quantity);
+          return;
+        }
+        const current = detectedMap.get(sku);
+        if (current) {
+          current.quantity += d.quantity;
+        } else {
+          detectedMap.set(sku, { className: d.className, quantity: d.quantity });
+        }
       });
     }
 
-    // C. Combine all unique item names
-    const allNames = Array.from(new Set([...expectedMap.keys(), ...detectedMap.keys()])).sort();
+    // C. Combine all unique SKUs (resolvable rows)
+    const allSkus = Array.from(new Set([...expectedMap.keys(), ...detectedMap.keys()])).sort();
 
-    return allNames.map((name) => {
-      const expectedData = expectedMap.get(name);
+    const resolvedRows: VerificationRow[] = allSkus.map((sku) => {
+      const expectedData = expectedMap.get(sku);
+      const detectedData = detectedMap.get(sku);
+
       const expected = expectedData ? expectedData.expected : 0;
-      const category = expectedData ? expectedData.category : 'General Equipment';
+      const labelMeta = detectedData
+        ? DEFAULT_YOLO_LABELS.find((l) => l.label === detectedData.className)
+        : undefined;
+      const category = expectedData ? expectedData.category : labelMeta?.category || 'General Equipment';
+      const name = expectedData ? expectedData.name : detectedData?.className || sku;
 
-      // Base detected from scan
-      const scanDetected = detectedMap.get(name) || 0;
+      const scanDetected = detectedData ? detectedData.quantity : 0;
+      const key = sku; // resolvable rows are always keyed by their sku
+      const isCustomAdjusted = key in manualDetectedOverrides;
+      const detected = isCustomAdjusted ? manualDetectedOverrides[key] : scanDetected;
 
-      // Check if user manually adjusted this count
-      const isCustomAdjusted = name in manualDetectedOverrides;
-      const detected = isCustomAdjusted ? manualDetectedOverrides[name] : scanDetected;
-
-      // Variance = Detected Quantity - Expected Quantity
       const variance = detected - expected;
-
       let status: 'Matched' | 'Short' | 'Extra' = 'Matched';
       if (variance < 0) status = 'Short';
       else if (variance > 0) status = 'Extra';
 
       return {
+        sku,
         name,
         category,
         expected,
@@ -152,8 +197,35 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
         status,
         originalDetected: scanDetected,
         isCustomAdjusted,
+        isNew: !expectedData,
       };
     });
+
+    // D. Unresolved (unmappable) detections — informational only, sku is
+    // always null, never eligible for reconciliation.
+    const unresolvedRows: VerificationRow[] = Array.from(unresolvedMap.entries()).map(
+      ([className, quantity]) => {
+        const key = rowKey({ sku: null, name: className });
+        const isCustomAdjusted = key in manualDetectedOverrides;
+        const detected = isCustomAdjusted ? manualDetectedOverrides[key] : quantity;
+        const labelMeta = DEFAULT_YOLO_LABELS.find((l) => l.label === className);
+
+        return {
+          sku: null,
+          name: className,
+          category: labelMeta?.category || 'Unmapped',
+          expected: 0,
+          detected,
+          variance: detected,
+          status: detected > 0 ? 'Extra' : 'Matched',
+          originalDetected: quantity,
+          isCustomAdjusted,
+          isNew: false,
+        };
+      },
+    );
+
+    return [...resolvedRows, ...unresolvedRows];
   }, [items, selectedLocation, activeScan, manualDetectedOverrides]);
 
   // Filtered rows for the table view
@@ -182,19 +254,26 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
   const shortCount = verificationRows.filter((r) => r.status === 'Short').length;
   const extraCount = verificationRows.filter((r) => r.status === 'Extra').length;
   const discrepanciesCount = shortCount + extraCount;
+  // Rows that will never be posted as a transaction even if
+  // "Synchronize inventory" is checked — surfaced so the operator knows
+  // these need a separate, manual decision (see PROJECT_STATUS.md).
+  const newCount = verificationRows.filter((r) => r.isNew).length;
+  const unmappedCount = verificationRows.filter((r) => r.sku === null).length;
+  const nonReconcilableCount = newCount + unmappedCount;
 
-  // Handle manual count adjustment
-  const handleCountChange = (itemName: string, newCount: number) => {
+  // Handle manual count adjustment — keyed by rowKey() (sku, or a namespaced
+  // className key for unmapped rows), not display name.
+  const handleCountChange = (key: string, newCount: number) => {
     setManualDetectedOverrides((prev) => ({
       ...prev,
-      [itemName]: Math.max(0, newCount),
+      [key]: Math.max(0, newCount),
     }));
   };
 
-  const handleResetItemCount = (itemName: string) => {
+  const handleResetItemCount = (key: string) => {
     setManualDetectedOverrides((prev) => {
       const copy = { ...prev };
-      delete copy[itemName];
+      delete copy[key];
       return copy;
     });
   };
@@ -208,6 +287,7 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
     if (verificationRows.length === 0) return;
 
     const itemsPayload: StockCheckItem[] = verificationRows.map((r) => ({
+      sku: r.sku,
       name: r.name,
       category: r.category,
       expected: r.expected,
@@ -215,6 +295,7 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
       difference: r.variance,
       variance: r.variance,
       status: r.status,
+      isNew: r.isNew,
     }));
 
     onConfirmStockCheck(
@@ -228,6 +309,7 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
         confirmedAt: new Date().toISOString(),
         notes: notes.trim() || (activeScan ? `Verified against YOLO Scan #${activeScan.id.slice(-6)}` : 'Manual audit'),
         items: itemsPayload,
+        appliedToInventory: applyToInventory,
       },
       applyToInventory
     );
@@ -521,14 +603,34 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
               ) : (
                 displayedRows.map((row) => (
                   <tr
-                    key={row.name}
+                    key={rowKey(row)}
                     className={`hover:bg-slate-50/80 transition-colors ${
                       row.variance !== 0 ? 'bg-rose-50/20' : ''
                     }`}
                   >
                     {/* Item Name */}
                     <td className="py-3 px-4">
-                      <div className="font-bold text-slate-900">{row.name}</div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                        <span>{row.name}</span>
+                        {row.sku === null ? (
+                          <span
+                            className="text-[10px] font-mono text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-semibold"
+                            title="No product mapping exists for this detected class — cannot be reconciled to inventory."
+                          >
+                            Unmapped
+                          </span>
+                        ) : row.isNew ? (
+                          <span
+                            className="text-[10px] font-mono text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded font-semibold"
+                            title="Detected here, but no store_inventory record exists for this SKU at this location — excluded from auto-reconciliation."
+                          >
+                            New
+                          </span>
+                        ) : null}
+                      </div>
+                      {row.sku && (
+                        <span className="text-[10px] text-slate-400 font-mono block">{row.sku}</span>
+                      )}
                       {row.isCustomAdjusted && (
                         <span className="text-[10px] text-slate-600 font-mono bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200">
                           Recounted from {row.originalDetected}
@@ -595,13 +697,13 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
                           type="number"
                           min="0"
                           value={row.detected}
-                          onChange={(e) => handleCountChange(row.name, parseInt(e.target.value, 10) || 0)}
+                          onChange={(e) => handleCountChange(rowKey(row), parseInt(e.target.value, 10) || 0)}
                           className="w-16 px-2 py-1 text-xs border border-slate-300 rounded font-mono text-center focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white"
                           title="Override detected count if manual recount was conducted"
                         />
                         {row.isCustomAdjusted && (
                           <button
-                            onClick={() => handleResetItemCount(row.name)}
+                            onClick={() => handleResetItemCount(rowKey(row))}
                             title="Reset to scan detection value"
                             className="p-1 text-slate-400 hover:text-slate-700"
                           >
@@ -679,8 +781,17 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
                 Synchronize inventory records with physical detected counts
               </span>
               <p className="text-[11px] text-slate-500">
-                If checked, official available quantities in the catalog will be updated to match the detected stock.
+                If checked, every Short/Extra row below posts one ADJUSTMENT transaction that brings the
+                system quantity to match what was physically detected. If unchecked, this check is still
+                recorded and reviewable, but nothing is written to inventory.
               </p>
+              {nonReconcilableCount > 0 && (
+                <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
+                  <Info className="w-3 h-3 shrink-0" />
+                  {nonReconcilableCount} row{nonReconcilableCount === 1 ? '' : 's'} ({newCount} New, {unmappedCount} Unmapped) will
+                  always be skipped — they need a manual decision, not an automatic write.
+                </p>
+              )}
             </div>
           </label>
         </div>
