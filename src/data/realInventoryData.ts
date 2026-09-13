@@ -2190,8 +2190,12 @@ const SOURCE_INVENTORY_DATASET: InventoryItem[] = [
 /**
  * The spreadsheet Status column is blank. Per the requested website behaviour,
  * YOLO/Settings items remain Available for scan -> Stock Check reconciliation,
- * while other items cycle through demonstration statuses. Source quantities are
- * NEVER changed by this status assignment.
+ * while other items cycle through demonstration statuses.
+ *
+ * IMPORTANT: the source ledger quantity is never changed. For a row whose whole
+ * record is Missing, Lost, Damaged, Under Maintenance, Disposed, or Checked Out,
+ * the derived availableQuantity is set to 0 so the UI cannot say both
+ * "66 available" and "Lost" at the same time.
  */
 const YOLO_STOCK_ITEM_NAMES = new Set([
   'arduino uno',
@@ -2219,10 +2223,19 @@ const NON_YOLO_STATUSES: ItemStatus[] = [
 export const REAL_INVENTORY_DATASET: InventoryItem[] = SOURCE_INVENTORY_DATASET.map(
   (item, index) => {
     const isYOLOStockItem = YOLO_STOCK_ITEM_NAMES.has(item.name.trim().toLowerCase());
+    const status: ItemStatus = isYOLOStockItem
+      ? 'Available'
+      : NON_YOLO_STATUSES[index % NON_YOLO_STATUSES.length];
+
+    // A whole-row unavailable status must not simultaneously advertise stock as
+    // available. Keep the spreadsheet's total quantity intact, but expose zero
+    // currently available units for those statuses.
+    const availableQuantity = status === 'Available' ? item.availableQuantity : 0;
 
     return {
       ...item,
-      status: isYOLOStockItem ? 'Available' : NON_YOLO_STATUSES[index % NON_YOLO_STATUSES.length],
+      status,
+      availableQuantity,
     };
   }
 );

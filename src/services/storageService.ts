@@ -23,6 +23,38 @@ export interface StorageState {
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
 
+
+const FULLY_UNAVAILABLE_STATUSES = new Set([
+  'Checked Out',
+  'Missing',
+  'Lost',
+  'Damaged',
+  'Under Maintenance',
+  'Disposed',
+]);
+
+/**
+ * Keep the quantity display consistent with the row status.
+ * `quantity` is the ledger/owned quantity and is never reduced here.
+ * `availableQuantity` is how many units can actually be issued right now.
+ */
+const normalizeInventoryAvailability = (item: InventoryItem): InventoryItem => {
+  const quantity = Math.max(0, Math.floor(Number(item.quantity) || 0));
+  const rawAvailable = Math.max(0, Math.floor(Number(item.availableQuantity) || 0));
+  const availableQuantity = FULLY_UNAVAILABLE_STATUSES.has(item.status)
+    ? 0
+    : Math.min(quantity, rawAvailable);
+
+  return {
+    ...item,
+    quantity,
+    availableQuantity,
+  };
+};
+
+const normalizeInventoryList = (items: InventoryItem[]): InventoryItem[] =>
+  items.map(normalizeInventoryAvailability);
+
 class StorageService {
   private items: InventoryItem[] = [];
   private scanHistory: ScanRecord[] = [];
@@ -72,7 +104,9 @@ class StorageService {
       const queue = localStorage.getItem('visionstock_cache_queue');
       const sync = localStorage.getItem('visionstock_cache_last_sync');
 
-      this.items = items ? JSON.parse(items) : [...REAL_INVENTORY_DATASET];
+      this.items = items
+        ? normalizeInventoryList(JSON.parse(items))
+        : normalizeInventoryList([...REAL_INVENTORY_DATASET]);
       this.scanHistory = scans ? JSON.parse(scans) : [];
       this.stockChecks = checks ? JSON.parse(checks) : [];
       this.pendingMutations = queue ? JSON.parse(queue) : [];
@@ -101,7 +135,7 @@ class StorageService {
       this.initializedLocal = true;
     } catch (error) {
       console.error('[StorageService] Local cache load failed:', error);
-      this.items = [...REAL_INVENTORY_DATASET];
+      this.items = normalizeInventoryList([...REAL_INVENTORY_DATASET]);
       this.scanHistory = [];
       this.stockChecks = [];
     }
@@ -166,7 +200,7 @@ class StorageService {
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
 
-      if (Array.isArray(data.items)) this.items = data.items;
+      if (Array.isArray(data.items)) this.items = normalizeInventoryList(data.items);
       if (Array.isArray(data.scanHistory)) this.scanHistory = data.scanHistory;
       if (Array.isArray(data.stockChecks)) this.stockChecks = data.stockChecks;
       if (data.modelConfig) {
@@ -184,7 +218,7 @@ class StorageService {
       // from surviving in SQLite/PostgreSQL after a deployment.
       if (data.initialized === false || data.datasetVersion !== INVENTORY_DATASET_VERSION) {
         await this.seedExactDataset(data.initialized !== false);
-        this.items = [...REAL_INVENTORY_DATASET];
+        this.items = normalizeInventoryList([...REAL_INVENTORY_DATASET]);
         this.scanHistory = [];
         this.stockChecks = [];
       }
@@ -398,7 +432,7 @@ class StorageService {
       if (!data || !Array.isArray(data.items)) {
         return { success: false, itemCount: 0, message: 'Invalid JSON format: missing "items" array.' };
       }
-      this.items = data.items;
+      this.items = normalizeInventoryList(data.items);
       this.scanHistory = Array.isArray(data.scanHistory) ? data.scanHistory : [];
       this.stockChecks = Array.isArray(data.stockChecks) ? data.stockChecks : [];
       this.modelConfig = data.modelConfig ? { ...DEFAULT_MODEL_CONFIG, ...data.modelConfig } : this.modelConfig;
@@ -426,7 +460,7 @@ class StorageService {
   }
 
   public resetToFactoryDataset(): void {
-    this.items = [...REAL_INVENTORY_DATASET];
+    this.items = normalizeInventoryList([...REAL_INVENTORY_DATASET]);
     this.scanHistory = [];
     this.stockChecks = [];
     this.pendingMutations = [];
