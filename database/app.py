@@ -499,12 +499,15 @@ def checkin():
             item['availableQuantity'] = min(total_qty, available + returned_qty)
 
             if item['availableQuantity'] >= total_qty:
+                # Final return: clear the active custodian.
                 item['status'] = 'Available'
                 item.pop('user', None)
                 item.pop('team', None)
                 item.pop('checkedOutAt', None)
             else:
-                item['status'] = 'Checked Out'
+                # Partial return: available stock and borrowed stock may coexist.
+                # Keep borrower metadata so the UI can still offer Check In.
+                item['status'] = 'Available' if item['availableQuantity'] > 0 else 'Checked Out'
             cur.execute(
                 'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
                 (json.dumps(item), item_id),

@@ -282,17 +282,21 @@ class StorageService {
     item.availableQuantity = Math.min(item.quantity, item.availableQuantity + returnedQty);
 
     if (item.availableQuantity >= item.quantity) {
+      // Everything has been returned.
       item.status = 'Available';
       item.user = undefined;
       item.team = undefined;
       item.checkedOutAt = undefined;
     } else {
-      item.status = 'Checked Out';
+      // A partial return can leave both available stock and outstanding borrowed stock.
+      // Keep the row Available while at least one unit is physically available; the
+      // borrower metadata remains until the final checked-out unit is returned.
+      item.status = item.availableQuantity > 0 ? 'Available' : 'Checked Out';
     }
 
-    this.queueMutation('CHECKIN', { itemId, returnLocation, qty: requestedQty });
+    this.queueMutation('CHECKIN', { itemId, returnLocation, qty: returnedQty });
     this.persistLocalCache();
-    void this.sendMutation('/api/inventory/checkin', 'POST', { itemId, returnLocation, qty: requestedQty });
+    void this.sendMutation('/api/inventory/checkin', 'POST', { itemId, returnLocation, qty: returnedQty });
   }
 
   public addScanRecord(scan: Omit<ScanRecord, 'id' | 'timestamp'>): void {

@@ -44,8 +44,9 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
-  // Checkout Modal State
+  // Checkout / Check-in Modal State
   const [activeModalItem, setActiveModalItem] = useState<InventoryItem | null>(null);
+  const [activeModalMode, setActiveModalMode] = useState<'checkout' | 'checkin'>('checkout');
 
   // Extract unique existing teams for filter dropdown
   const uniqueTeams = useMemo(() => {
@@ -299,11 +300,18 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
               {filteredAndSortedItems.map((item) => {
-                const isCheckedOut = item.status === 'Checked Out';
                 const isConsumable = item.assetType === 'Consumable';
                 const hasAvailable = item.availableQuantity > 0;
+
+                // A partial checkout can still leave the overall row "Available".
+                // Borrower metadata tells us the quantity gap represents units currently out.
+                const hasCheckoutRecord = Boolean(item.user || item.checkedOutAt);
+                const outstandingQuantity = hasCheckoutRecord
+                  ? Math.max(0, item.quantity - item.availableQuantity)
+                  : 0;
+
                 const canCheckout = item.status === 'Available' && hasAvailable;
-                const canCheckin = isCheckedOut;
+                const canCheckin = outstandingQuantity > 0;
                 const unavailableActionLabel =
                   item.status === 'Under Maintenance'
                     ? 'Maintenance'
@@ -415,31 +423,44 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
 
                     {/* Actions */}
                     <td className="px-3.5 py-2.5 text-right">
-                      {canCheckin ? (
-                        <button
-                          onClick={() => setActiveModalItem(item)}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          Check In
-                        </button>
-                      ) : canCheckout ? (
-                        <button
-                          onClick={() => setActiveModalItem(item)}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-[#005f60] bg-teal-50 hover:bg-teal-100/80 border border-teal-200 rounded-md transition-colors inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <UserCheck className="w-3 h-3" />
-                          Check Out
-                        </button>
-                      ) : (
-                        <button
-                          disabled
-                          className="px-2 py-1 text-[11px] font-medium text-slate-400 bg-slate-100 rounded-md cursor-not-allowed"
-                          title={`Action unavailable while item status is ${item.status}`}
-                        >
-                          {unavailableActionLabel}
-                        </button>
-                      )}
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        {canCheckin && (
+                          <button
+                            onClick={() => {
+                              setActiveModalMode('checkin');
+                              setActiveModalItem(item);
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors inline-flex items-center gap-1 cursor-pointer"
+                            title={`Return up to ${outstandingQuantity} checked-out unit${outstandingQuantity === 1 ? '' : 's'}`}
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Check In
+                          </button>
+                        )}
+
+                        {canCheckout && (
+                          <button
+                            onClick={() => {
+                              setActiveModalMode('checkout');
+                              setActiveModalItem(item);
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-[#005f60] bg-teal-50 hover:bg-teal-100/80 border border-teal-200 rounded-md transition-colors inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <UserCheck className="w-3 h-3" />
+                            Check Out
+                          </button>
+                        )}
+
+                        {!canCheckin && !canCheckout && (
+                          <button
+                            disabled
+                            className="px-2 py-1 text-[11px] font-medium text-slate-400 bg-slate-100 rounded-md cursor-not-allowed"
+                            title={`Action unavailable while item status is ${item.status}`}
+                          >
+                            {unavailableActionLabel}
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -473,6 +494,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
       {activeModalItem && (
         <CheckoutModal
           item={activeModalItem}
+          mode={activeModalMode}
           isOpen={true}
           onClose={() => setActiveModalItem(null)}
           onConfirmCheckout={onCheckoutItem}

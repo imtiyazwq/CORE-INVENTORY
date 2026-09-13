@@ -5,6 +5,7 @@ import { VALID_LOCATIONS } from '../data/locations';
 
 interface CheckoutModalProps {
   item: InventoryItem;
+  mode: 'checkout' | 'checkin';
   isOpen: boolean;
   onClose: () => void;
   onConfirmCheckout: (itemId: string, user: string, team: string, qty: number) => void;
@@ -13,16 +14,19 @@ interface CheckoutModalProps {
 
 export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   item,
+  mode,
   isOpen,
   onClose,
   onConfirmCheckout,
   onConfirmReturn,
 }) => {
-  const isCheckedOut = item.status === 'Checked Out';
-  const outstandingQuantity = useMemo(
-    () => Math.max(0, item.quantity - item.availableQuantity),
-    [item.quantity, item.availableQuantity]
-  );
+  const isCheckinMode = mode === 'checkin';
+  const outstandingQuantity = useMemo(() => {
+    const hasCheckoutRecord = Boolean(item.user || item.checkedOutAt);
+    return hasCheckoutRecord
+      ? Math.max(0, item.quantity - item.availableQuantity)
+      : 0;
+  }, [item.quantity, item.availableQuantity, item.user, item.checkedOutAt]);
 
   const [user, setUser] = useState(item.user || '');
   const [team, setTeam] = useState(item.team || '');
@@ -45,7 +49,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     e.preventDefault();
     setError(null);
 
-    if (isCheckedOut) {
+    if (isCheckinMode) {
       const maxReturn = Math.max(1, outstandingQuantity);
       if (quantity <= 0 || quantity > maxReturn) {
         setError(`Return quantity must be between 1 and ${maxReturn}.`);
@@ -83,7 +87,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900">
-                {isCheckedOut ? 'Check In Inventory' : 'Check Out Inventory'}
+                {isCheckinMode ? 'Check In Inventory' : 'Check Out Inventory'}
               </h3>
               <p className="text-[11px] text-slate-500 font-mono">{item.itemCode}</p>
             </div>
@@ -112,7 +116,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               <span>Available Units:</span>
               <span className="font-mono font-bold text-[#005f60]">{item.availableQuantity}</span>
             </div>
-            {isCheckedOut && (
+            {isCheckinMode && (
               <div className="flex items-center justify-between text-slate-500">
                 <span>Currently Out:</span>
                 <span className="font-mono font-bold text-amber-700">{outstandingQuantity}</span>
@@ -134,7 +138,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             </div>
           )}
 
-          {isCheckedOut ? (
+          {isCheckinMode ? (
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -228,7 +232,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               className="px-4 py-1.5 text-xs font-semibold text-white bg-[#005f60] hover:bg-[#004d4e] rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
             >
               <CheckCircle className="w-3.5 h-3.5" />
-              {isCheckedOut ? 'Confirm Return' : 'Authorize Checkout'}
+              {isCheckinMode ? 'Confirm Return' : 'Authorize Checkout'}
             </button>
           </div>
         </form>
