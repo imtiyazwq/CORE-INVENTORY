@@ -1,6 +1,14 @@
 # CORE-INVENTORY — Project Status & Handoff
 
-*Last updated: 2026-09-12, following a debugging + Firebase migration session.*
+*Last updated: 2026-09-13 — Firestore write path (via Flask + Admin SDK) and
+Firestore Security Rules are both done and verified live. Two separate UI
+fixes landed this session: a manual IN/OUT/ADJUSTMENT stock transaction UI on
+the Inventory page (Section 9), and — the actual root cause of the original
+bug report — a broken className→SKU identity mapping on the Scan Inventory
+page that silently dropped 13 of 15 detectable item types, including NodeMCU
+(Section 10, supersedes Section 9's framing as "the" bug). Next up: manual
+browser click-through of both fixes, a product/model decision on the 6
+classes with no catalog mapping (Section 10), then deployment (Section 5).*
 
 This file exists so a new Claude Code session (or any future contributor) can pick up
 exactly where things left off without re-explaining context. Read this fully before
@@ -84,8 +92,8 @@ security rule that pairs with it.
 ### Done:
 - Firestore **Native mode** database created for project `petrosainsteamb`
   (region: check Firebase console — was not recorded here, verify before assuming).
-  Currently in **test mode** rules (open access) — see Section 6, this is NOT
-  production-safe yet.
+  Was initially left in open test-mode rules; **proper rules are now published
+  and verified live** — see Section 6.
 - One-time migration script (`database/migrate_to_firestore.py`) written and run
   successfully. All **109 rows** from SQLite (`products` JOIN `store_inventory`)
   were copied into Firestore's `store_inventory` collection.
@@ -213,7 +221,7 @@ Nothing has been deployed yet. The app currently only runs locally
 
 ## 6. Security Notes — Must Address Before Going Public
 
-### Firestore Security Rules — decided, written, NOT yet published (blocked)
+### Firestore Security Rules — DONE, published and verified live (2026-09-13)
 
 - **The Flask/Firebase auth mismatch**: Firestore Security Rules only ever see
   `request.auth`, which comes from Firebase Auth — they have zero visibility into
@@ -233,24 +241,33 @@ Nothing has been deployed yet. The app currently only runs locally
     `signInAnonymously()` themselves from devtools and read everything. It only
     stops direct, no-SDK scraping of the Firestore REST endpoint by someone who
     never loads the app.
-- Rules file written: `firestore.rules` (project root). Matches the above; also
+- Rules file: `firestore.rules` (project root). Matches the above; also
   default-denies every other collection.
-- **BLOCKED on a manual step**: tested `signInAnonymously()` against the live
-  project and got `auth/configuration-not-found` — **Firebase Authentication has
-  never been initialized for this project**, not just "Anonymous provider
-  disabled." Required before publishing `firestore.rules`:
-  1. Firebase Console → `petrosainsteamb` → Build → Authentication → Get started.
-  2. Sign-in method → enable **Anonymous**.
-  3. Only then publish `firestore.rules` (Firestore Database → Rules tab → paste
-     → Publish; no `firebase-tools` CLI is installed locally, so console paste is
-     the path of least resistance, though the CLI works too if installed).
-  **Publish rules only after step 2** — publishing them first would break every
-  read (`request.auth` can never be non-null until Anonymous is enabled and the
-  frontend's sign-in succeeds).
-- Until this is published, **Firestore is still in open test-mode rules** —
-  anyone with the project's client config can currently read or write
-  `store_inventory` directly. Do not treat this as fixed until `firestore.rules`
-  is actually live in the console.
+- **Setup history**: `signInAnonymously()` initially failed with
+  `auth/configuration-not-found` — Firebase Authentication had never been
+  initialized for the project. User enabled it (Console → Authentication → Get
+  started → Sign-in method → Anonymous), confirmed by re-running the same check
+  (succeeded, got back a real anonymous `uid`). User then published
+  `firestore.rules` via the Firestore Database → Rules tab in the console
+  (`firebase-tools` deploy was attempted first but the existing Admin SDK service
+  account lacks the IAM permissions the CLI needs for a `serviceusage.googleapis.com`
+  check — 403 — so console paste was used instead; broadening that service
+  account's IAM role wasn't done, since it's a live-project permissions change
+  and unnecessary for a one-time manual publish).
+- **Verified live** (2026-09-13) with three direct SDK checks against the real
+  project, each in its own isolated Firebase app instance:
+  1. Unauthenticated `getDocs(collection(db, 'store_inventory'))` → **denied**
+     (`permission-denied`). Confirms the open test-mode rules are gone.
+  2. `signInAnonymously()` then the same read → **succeeded**, returned all
+     109 documents. Confirms the frontend's actual `fetchInventory()` path
+     (which awaits `authReady` before reading) will work.
+  3. Same anonymous session attempting `updateDoc()` on `store_inventory` →
+     **denied** (`permission-denied`). Confirms writes are blocked for every
+     client regardless of auth state, exactly as intended — only Flask's
+     Admin SDK can write.
+- **Current state: this is done.** Firestore is no longer in open test mode.
+  Reads require (anonymous) Firebase Auth; writes are blocked for all clients
+  and only happen via Flask's `record_transaction_firestore()`.
 
 ### Other items
 
@@ -275,10 +292,12 @@ Nothing has been deployed yet. The app currently only runs locally
    already confirmed working pre-existing code (Section 4).
 2. ~~Implement the Firestore write path~~ — **done** 2026-09-12, via Flask +
    Admin SDK, not a direct frontend write (Section 2/4).
-3. **[BLOCKED ON USER] Enable Firebase Authentication + Anonymous provider** in
-   the Firebase Console (Section 6) — required before the read-side security
-   rule can work at all.
-4. Publish `firestore.rules` (Section 6) — only after step 3.
+3. ~~Enable Firebase Authentication + Anonymous provider~~ — **done** 2026-09-13
+   by the user (Section 6).
+4. ~~Publish `firestore.rules`~~ — **done and verified live** 2026-09-13
+   (Section 6) — unauthenticated reads denied, anonymous reads allowed, all
+   client writes denied, confirmed with direct SDK checks against the real
+   project.
 5. **Manually re-test the full loop in a real browser**: login (Flask) → view
    inventory (Firestore) → perform a transaction via the UI → confirm the change
    appears both in the UI and in the Firebase console under `store_inventory`.
@@ -311,3 +330,305 @@ Nothing has been deployed yet. The app currently only runs locally
   On Render, it'll need to be set explicitly as a dashboard environment variable
   when deployment happens (Section 5) — otherwise it'll still default to `true`,
   which happens to be correct, but that should be an explicit choice, not luck.
+- **`StockCheckPage.tsx` is broken and unwired** — not imported anywhere in
+  `App.tsx`, no page ID for it in `Sidebar.tsx`'s `PageId` type or nav items, and
+  it doesn't even compile (`StockCheckRecord` / `StockCheckItem` referenced from
+  `../types` don't exist there — 2 of the 3 pre-existing `tsc` errors mentioned
+  throughout this doc are this file). Not touched this session — explicitly out
+  of scope per the user. Undecided: finish building it as the real "physical
+  stocktake / bulk ADJUSTMENT" page it was clearly meant to be, or remove it.
+- **`CheckoutModal.tsx` / checkout-in-online doesn't reach the backend** —
+  `storageService.checkoutItem()` / `checkinItem()` update local UI state and
+  buffer an offline mutation, but `enqueueOfflineMutation()` only actually sends
+  anything to the server when `isOnline` is false; when online it just stamps
+  `lastSyncedAt` and returns. So checking an asset out/in while online never
+  calls `postTransaction()` or reaches Flask/Firestore at all — it only shows up
+  in that browser's local state until an offline→online sync cycle happens to
+  run. Not touched this session — explicitly out of scope per the user.
+
+---
+
+## 9. Feature: Manual IN / OUT / ADJUSTMENT Stock Transactions (2026-09-13)
+
+**New feature, not a bug fix.** Previously, the only UI path that could change
+stock quantities was Scan Inventory's "Add Item Manually → Confirm", which is
+hardcoded to `action: 'IN'` — there was no UI for OUT or ADJUSTMENT at all (see
+the investigation below). This adds one.
+
+### What was found (investigation, before any code was touched)
+
+- **`ConfirmScanModal.tsx`** existed as **dead code** — a fully-built modal with
+  an editable item/quantity table and a "Confirm Scan & Update Inventory"
+  button, but never imported or rendered by anything in the app. It had no
+  concept of transaction `action` type at all — it was implicitly a single
+  "commit these detected quantities" flow tied to the old CV-scan-detection
+  shape (`DetectedSummaryItem[]`: className/count/confidence, no SKU).
+- **`StockCheckPage.tsx`** looked like the natural home for an ADJUSTMENT-style
+  "reconcile the physical count" feature but is orphaned/broken (see Section 8)
+  — left alone this session per explicit instruction.
+- **`CheckoutModal.tsx`** is reachable but models asset custody ("assign to
+  Sarah in Engineering"), not a general stock decrement — left alone this
+  session per explicit instruction.
+
+### What was built
+
+- **`ConfirmScanModal.tsx` was rewritten** (same file/export name, per
+  instruction — not renamed) from a multi-item CV-detection-review table into a
+  single-item stock transaction modal:
+  - Props changed from `detectedItems: DetectedSummaryItem[]` to `item:
+    InventoryItem` (matching `CheckoutModal`'s existing single-item pattern) —
+    it's now opened for one specific catalog row at a time.
+  - Added a 3-way action selector: **Stock In (IN)**, **Stock Out (OUT)**,
+    **Adjustment (ADJUSTMENT)**, styled as segmented pill buttons matching the
+    tab pattern already used in `ScanInventoryPage.tsx`.
+  - Added an Increase/Decrease sub-toggle that only appears for ADJUSTMENT.
+  - Location is shown **read-only** (not an editable dropdown like the old
+    version had) — it's fixed to the item's current `location`, since
+    `{sku}_{store_name}` is a composite key and letting the user retarget it
+    to a different store from this modal would silently write to the wrong
+    store's document (or fail if that SKU isn't stocked there).
+  - Live preview text shows the resulting `quantity`/`availableQuantity`
+    before submit, computed with the exact same math as the backend.
+  - On submit, calls `storageService.postTransaction()` **directly** (per
+    explicit instruction — this is a deliberate, one-off deviation from
+    `CheckoutModal`'s convention of bubbling intent up to `App.tsx` via a
+    callback prop; `App.tsx` is only involved for the success toast).
+  - **Payload contract** (matches `database/inventory_manager.py`'s
+    `record_transaction()` / `record_transaction_firestore()` exactly):
+    - IN: `qty_changed` = positive magnitude to add.
+    - OUT: `qty_changed` = positive magnitude to remove (server negates it).
+    - ADJUSTMENT: `qty_changed` = **signed** delta — positive to increase,
+      negative to decrease. **Note**: the task description characterized
+      `qty_changed` as "always positive/unsigned regardless of action" — that
+      holds for IN and OUT, but not for ADJUSTMENT, whose backend
+      implementation (`new_qty = max(0, qty + qty_changed)`) uses the delta's
+      sign directly with no server-side negation. Built to match the real
+      backend code, not that description; the modal's UI still only ever asks
+      the user for a positive magnitude (via the Increase/Decrease toggle) so
+      this doesn't leak into the UX, just the outgoing payload.
+  - Client-side validates OUT against `item.availableQuantity` before even
+    calling the API (fast feedback), but the server's own check is still the
+    real guard.
+- **`storageService.ts`'s `postTransaction()` signature changed**:
+  `Promise<void>` → `Promise<{ success: boolean; error?: string }>`. Previously
+  a rejected transaction (e.g. OUT with insufficient stock, a 422) was
+  swallowed silently — the optimistic UI update got reverted by a background
+  re-fetch, but the caller had no way to know it failed. This is additive/
+  backward compatible — `App.tsx`'s existing `handleScanConfirmed` still just
+  does `await storageService.postTransaction(txn)` and ignores the return
+  value, unaffected. The new modal is the first caller that actually checks
+  `result.success` / `result.error` to show a real inline error instead of
+  falsely reporting success.
+- **`InventoryPage.tsx`**: added a new "Adjust Stock" button (slate/neutral
+  styling, existing button pattern) next to the existing Check In/Check Out
+  buttons on every row. Opens the modal for that row's item. New optional
+  `onStockAdjusted?: (message: string) => void` prop, threaded through.
+- **`App.tsx`**: new `handleStockAdjusted(message)` → `addToast('success',
+  'Stock Updated', message)`, wired to `InventoryPage`'s `onStockAdjusted`,
+  matching the existing toast pattern used for checkout/checkin/sync/etc.
+
+### Testing performed
+
+- `npx tsc --noEmit` — no new errors (same 3 pre-existing ones, both
+  `StockCheckPage.tsx` errors and the unrelated `AuthPage.tsx` one).
+- Verified all three action types **end-to-end over real HTTP** against the
+  running Flask server + live Firestore, sending the exact payload shapes the
+  modal itself computes for a given action/direction/magnitude:
+  - IN qty_changed=3 on `C001_MAKER_STUDIO` (12/12 baseline) → 15/15. Correct.
+  - OUT qty_changed=2 (positive, as the modal sends it) → qty stays 15,
+    avail → 13. Correct.
+  - ADJUSTMENT qty_changed=-4 (decrease direction) → qty max(0,15-4)=11, avail
+    max(0,13-4)=9. Correct.
+  - ADJUSTMENT qty_changed=+1 (increase direction) → qty 12, avail 10.
+    Correct.
+  - Restored the document to its 12/12 baseline afterward.
+- Verified the error path: OUT qty_changed=9999 (exceeds available) → HTTP 422,
+  `{"error": "Insufficient available stock for OUT: requested 9999, available
+  12."}`, and confirmed Firestore was **not** modified. This is the exact
+  message `postTransaction()` now surfaces via `result.error`, which the modal
+  displays inline.
+- **Not tested**: the actual browser click-path (opening the modal, clicking
+  through the UI, watching the toast/table update). No browser automation tool
+  is available in this environment. See manual test steps below.
+
+### Manual browser test steps (do this to confirm end-to-end)
+
+1. `.env.local` should already have `VITE_USE_FIREBASE=true` (set earlier this
+   project). Start both servers: `python database/app.py` and `npm run dev`.
+2. Log in as `adam` / `password123`.
+3. Go to **Inventory** in the sidebar. Pick any item you don't mind changing
+   temporarily (e.g. note its current Quantity/Available values first so you
+   can manually restore them after, since this is real production data).
+4. Click **Adjust Stock** on that row.
+5. **Test IN**: leave "Stock In" selected, enter a quantity (e.g. `2`), click
+   **Confirm Transaction**. Expect: a green "Stock Updated" toast, the modal
+   closes, and the row's Quantity/Available both increase by 2 within a
+   second or two (re-fetched from Firestore).
+6. **Test OUT**: reopen the modal on the same item, switch to "Stock Out",
+   enter a quantity within the available amount (e.g. `1`), confirm. Expect:
+   toast, Available decreases by 1, Quantity unchanged.
+7. **Test OUT rejection**: reopen, switch to "Stock Out", enter a quantity
+   larger than what's shown as available. Expect: an inline red error in the
+   modal itself (no toast, modal stays open) — either the client-side message
+   ("Cannot remove N — only M available") if caught before submit, or the
+   server's `Insufficient available stock...` message if you bypass the min/max
+   on the number input.
+8. **Test ADJUSTMENT**: reopen, switch to "Adjustment", try both "Increase (+)"
+   and "Decrease (-)" with some quantity, confirm each. Expect: Quantity AND
+   Available both change by that amount (unlike IN/OUT, ADJUSTMENT moves both).
+9. **Confirm in Firestore console**: open the Firebase console →
+   `petrosainsteamb` → Firestore Database → `store_inventory` collection → find
+   the document (`{SKU}_{STORE_NAME}`, spaces as underscores) → confirm
+   `qty`/`avail_qty`/`status` match what the UI showed after each step above.
+10. Restore the item's original values afterward (via another Adjust Stock
+    transaction, or by editing the Firestore document directly) if this was
+    real inventory data you don't want permanently changed.
+
+---
+
+## 10. Root Cause Fix: className → SKU Identity (2026-09-13)
+
+**This supersedes the framing in Section 9.** Section 9 fixed a real, separate
+gap (no UI existed anywhere for OUT/ADJUSTMENT), but the user later clarified
+the *original* bug report was specifically about `ScanInventoryPage.tsx`'s
+main AI-detection / "Confirm & Update Inventory" workflow — a different page,
+untouched by Section 9's work. Investigating that turned up the actual root
+cause.
+
+### The bug
+
+Every item on `ScanInventoryPage.tsx` (both AI/webcam/upload detections and
+the "Add Item Manually" dropdown) is identified only by a YOLO **className**
+string (e.g. `'nodemcu esp32'`) — there was no `sku` field anywhere on
+`ConfirmedItemRow`. But the entire backend (`products.sku`, the
+`store_inventory` composite key, Firestore's `{sku}_{store_name}` document
+IDs) is built around SKU as the identity. `App.tsx`'s `handleScanConfirmed`
+tried to bridge this gap with a fallback: match the detection's `className`
+against a loaded `InventoryItem`'s catalog `name`, case-insensitively, exact
+string equality only.
+
+**That fallback is broken for 13 of the 15 trained YOLO classes.** YOLO class
+labels are ML-training tokens (`Arduino_Uno`, `nodemcu esp32`,
+`tongue_depressor`) and product catalog names are human-readable strings from
+the Excel import (`Arduino Uno`, `NodeMCU`, `Tongue depressor`) — two
+independent naming schemes that only coincidentally agree for `breadboard`
+and `pen`. Confirmed by direct string comparison and cross-referencing the
+real database (SQLite `products` table AND the live Firestore
+`store_inventory` collection), not by inference:
+
+| YOLO className | Product name | Exact match? |
+|---|---|---|
+| `Arduino_Uno` | `Arduino Uno` | No (underscore vs space) |
+| `a4_colored_paper` | `A4 colored paper` | No (underscore vs space) |
+| `nodemcu esp32` | `NodeMCU` | **No** (extra "esp32", different structure) |
+| `scissors` | `Scissor` | No (plural vs singular) |
+| `goggles` | `Safety Goggle` | No (unrelated naming) |
+| `tongue_depressor` | `Tongue depressor` | No (underscore vs space) |
+| `sticky note paper` | `Sticky note` | No (extra word) |
+| `breadboard` / `pen` | same | Yes (coincidence) |
+| `bag_arduino_20`, `bag_arduino_30`, `bundle_arduino`, `box sticky note`, `cup_rim`, `full_cup` | *(none)* | N/A — no product exists |
+
+When the match fails, `sku` ends up `undefined`, and the old code did
+`console.warn(...); return;` — **silently dropping that item** while the
+overall scan still fired a green "Scan Committed" toast claiming the full
+total quantity was logged. This is very likely the real mechanism behind the
+original "my stock changes don't show up" report — for 13 of 15 possible
+detections, including the NodeMCU example the user gave, nothing was ever
+posted to the backend, with no visible error.
+
+### The fix
+
+- **`YOLOClassLabel`** (`src/types/index.ts`) gained a `sku: string | null`
+  field.
+- **`yoloConfig.ts`** gained `YOLO_CLASS_SKUS: Record<string, string | null>`
+  — a hand-verified className → SKU table, checked against the real product
+  catalog (see table above; full reasoning and per-entry comments are in the
+  file itself). **9 of 15** classes map to a real SKU; **6 of 15** are
+  `sku: null`, for two distinct reasons — this count needed re-verification,
+  see "Known catalog gap" below.
+- **`modelService.ts`**'s `DEFAULT_YOLO_LABELS` now populates `sku` from that
+  table for every class.
+- **`ScanInventoryPage.tsx`**: `ConfirmedItemRow` gained `sku: string | null`,
+  threaded through all three places a row gets created — the webcam detection
+  loop, the upload/YOLO-on-canvas path, and manual "Add Item Manually" — all
+  pulling `sku` from the same `DEFAULT_YOLO_LABELS` lookup already used for
+  `category`. `handleFinalConfirm` now forwards `sku` to `onScanConfirmed`.
+  Also softened the page's own immediate local success banner text (it used
+  to unconditionally claim "Successfully logged X units!" before the async
+  transactions even ran) to a neutral "submitted for processing" message,
+  since the real success/failure report now comes from `App.tsx`'s toast.
+- **`App.tsx`**'s `handleScanConfirmed` was rewritten:
+  - **SKU resolution now uses `det.sku` (from the verified table) as the
+    primary lookup.** The old name-matching logic is kept only as a
+    last-resort fallback for defensiveness, not as the source of truth — it's
+    the same unreliable comparison as before, just demoted.
+  - **No more silent drops.** The function is now `async`, awaits every
+    `postTransaction()` call via `Promise.all` (the old code used
+    `.forEach(async ...)` and fired its success toast immediately,
+    **before any of the transactions had even completed** — a second,
+    independent bug this fix also corrects), and classifies each item as
+    succeeded or failed (missing SKU, or a real `postTransaction()` rejection
+    like insufficient stock).
+  - **Honest toasts**: all succeeded → green "Scan Committed". All failed →
+    amber "Scan Not Recorded" naming what couldn't be added and why. Mixed →
+    a success toast for what went through plus a separate warning toast
+    listing what didn't, so the items that DID succeed are never held hostage
+    by the ones that didn't.
+
+### Testing performed
+
+- `npx tsc --noEmit` — no new errors beyond the same 3 pre-existing,
+  unrelated ones (fixed one *new* error this change introduced in
+  `SettingsPage.tsx`'s custom-class-add handler, which also constructs a
+  `YOLOClassLabel` — now sets `sku: null` there too, correctly, since a
+  freshly user-added class has no catalog mapping yet).
+- **Verified the real `YOLO_CLASS_SKUS` table directly** (not just by
+  reasoning about it) by evaluating `yoloConfig.ts` with `tsx` — output
+  matched the hand-verified table exactly, including `'nodemcu esp32' ->
+  'E006'` and all 6 nulls.
+- **NodeMCU end-to-end**: simulated the fixed pipeline's resolved payload
+  (`sku: 'E006'`, the real value `DEFAULT_YOLO_LABELS` now resolves for
+  `'nodemcu esp32'`) as a real HTTP `POST /api/inventory/transaction` against
+  the running Flask server, authenticated as `adam`. `E006_CHILLAX` went from
+  111/111 → 113/113, confirmed by an independent Firestore read afterward,
+  then restored to 111/111.
+- **Null-sku warning path**: extracted the exact decision algorithm (item
+  resolution → `postTransaction` → success/failure classification → toast
+  selection) into a standalone script and ran three cases — all-null-sku
+  (→ "Scan Not Recorded" warning), a mix of one resolvable + one null-sku
+  item (→ partial-success toast + a separate skipped-items warning), and
+  all-resolvable (→ plain "Scan Committed", no warning). All three produced
+  the expected toast type and message. This tests the real logic verbatim,
+  not a re-implementation — the algorithm was copied into the test script
+  unchanged.
+- **Not tested**: the actual browser click-path (scanning/manually adding
+  NodeMCU through the real UI, watching the toast appear). No browser
+  automation tool is available in this environment.
+
+### Known catalog gap (flagged, not decided)
+
+**6 of the model's 15 trained classes have no usable product mapping** —
+more than the 4 the user had assumed going in (`bag_arduino_20`,
+`bag_arduino_30`, `bundle_arduino`, `box sticky note`); re-verification
+against the live database also turned up `cup_rim` and `full_cup`. These
+split into two different problems:
+
+- `bag_arduino_20`, `bag_arduino_30`, `bundle_arduino` — **no candidate
+  product exists at all** in the 109-item catalog. The model was seemingly
+  trained on objects that were never added to inventory, or were later
+  removed.
+- `box sticky note`, `cup_rim`, `full_cup` — **a plausible candidate product
+  exists** (`Sticky note` / `Paper cup`) but each of these pairs with another
+  trained class that already claims that same product (`sticky note paper` →
+  `Sticky note`; `cup_rim` and `full_cup` both plausibly → `Paper cup`).
+  Mapping either one to the shared SKU risks **double-counting a single
+  physical object** if both classes fire on it within one scan (e.g. a cup
+  detected as `cup_rim` in one frame and `full_cup` in another).
+
+**Not decided here, needs a human call**: either retrain the model to drop
+the classes with no product, and merge the ambiguous pairs into one class
+each; or extend the product catalog with real SKUs for whichever of these
+are actually meant to be tracked separately. Until one of those happens,
+scanning/manually adding any of these 6 classes will correctly show a
+"could not be added" warning instead of silently vanishing — which is the
+fix, but the underlying model/catalog mismatch they represent is still open.

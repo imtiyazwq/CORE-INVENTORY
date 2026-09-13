@@ -90,6 +90,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       index: newIdx,
       label: cleanLabel,
       category: newCategory,
+      // No product mapping exists for a freshly user-added class — see
+      // yoloConfig.ts's YOLO_CLASS_SKUS for how the built-in 15 are mapped.
+      sku: null,
     };
 
     const updated = [...classes, newClassItem];

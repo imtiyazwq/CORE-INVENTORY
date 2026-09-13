@@ -304,8 +304,14 @@ class StorageService {
    *
    * If online:  sends to server, updates local state optimistically.
    * If offline: applies change locally and buffers in pendingMutations for later sync.
+   *
+   * Returns whether the server actually accepted the transaction (e.g. an OUT
+   * that exceeds available stock returns success: false with the server's
+   * error message) — callers that need to show the user real success/failure
+   * feedback should check this instead of assuming the promise resolving means
+   * the transaction landed.
    */
-  public async postTransaction(txn: TransactionPayload): Promise<void> {
+  public async postTransaction(txn: TransactionPayload): Promise<{ success: boolean; error?: string }> {
     // Optimistic local update
     const delta = txn.action === 'OUT' ? -txn.qty_changed : txn.qty_changed;
     const updatedItems = this.state.items.map((item) => {
@@ -327,7 +333,7 @@ class StorageService {
       // Buffer for later replay
       this.enqueueOfflineMutation('UPDATE_ITEM', txn);
       console.log('[StorageService] Offline — transaction buffered in pendingMutations.');
-      return;
+      return { success: true };
     }
 
     // Attempt live POST — writes always go through Flask, which uses the Firebase
@@ -346,16 +352,18 @@ class StorageService {
         console.error('[StorageService] Transaction rejected by server:', err.error);
         // Revert optimistic update by re-fetching
         await this.fetchInventory();
-        return;
+        return { success: false, error: err.error || `Server returned ${res.status}` };
       }
 
       this.updateState({
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       });
+      return { success: true };
     } catch (networkErr) {
       // Network dropped mid-request — buffer for later
       console.warn('[StorageService] Network error — buffering transaction offline:', networkErr);
       this.enqueueOfflineMutation('UPDATE_ITEM', txn);
+      return { success: true };
     }
   }
 

@@ -102,3 +102,54 @@ export const YOLO_CLASS_CATEGORIES: Record<string, string> = {
   'sticky note paper': 'Stationery & Office Supplies',
   'tongue_depressor': 'Craft Materials & STEM Kits',
 };
+
+/**
+ * className -> real product SKU, hand-verified against the actual product
+ * catalog (database/inventory_system.db `products` table, cross-checked
+ * against the live Firestore `store_inventory` collection). YOLO class labels
+ * are ML-training tokens (underscores, plurals, sensor-variant suffixes) and
+ * were never guaranteed to match catalog product names — most don't. This map
+ * is the single source of truth that closes that gap; do not fall back to
+ * string-matching className against product name (see App.tsx's
+ * handleScanConfirmed), that comparison fails for 13 of these 15 classes.
+ *
+ * `null` means no transaction should ever be posted for that class — either
+ * because no product exists for it at all, or because mapping it would risk
+ * double-counting against another class already claiming the same product.
+ * See the per-entry comments below for which case applies.
+ */
+export const YOLO_CLASS_SKUS: Record<string, string | null> = {
+  'Arduino_Uno': 'E001', // -> "Arduino Uno"
+  'a4_colored_paper': 'C014', // -> "A4 colored paper"
+
+  // No product named or resembling "bag of arduino [kit]" exists anywhere in
+  // the 109-item catalog (verified: no "bag" or "bundle" product at all).
+  'bag_arduino_20': null,
+  'bag_arduino_30': null,
+  'bundle_arduino': null,
+
+  // "Sticky note" (S005) exists as a single product with no separate "box"
+  // packaging SKU. 'sticky note paper' (below) already claims S005; mapping
+  // this class to the same SKU risks double-counting one physical item if
+  // both classes fire on it in the same scan. Needs a human decision: retrain
+  // to merge these into one class, or add a distinct catalog SKU for the box
+  // variant.
+  'box sticky note': null,
+
+  'breadboard': 'E004', // -> "Breadboard"
+
+  // Only "Paper cup" (C002) exists — no separate "rim" vs "full" SKU. Same
+  // double-counting risk as 'box sticky note': these two classes plausibly
+  // both represent one physical cup viewed differently, and mapping both to
+  // C002 could count one object twice within a single scan. Flagged, not
+  // decided.
+  'cup_rim': null,
+  'full_cup': null,
+
+  'goggles': 'L019', // -> "Safety Goggle" (only PPE goggle product in catalog)
+  'nodemcu esp32': 'E006', // -> "NodeMCU"
+  'pen': 'S001', // -> "Pen"
+  'scissors': 'T001', // -> "Scissor"
+  'sticky note paper': 'S005', // -> "Sticky note"
+  'tongue_depressor': 'C021', // -> "Tongue depressor"
+};

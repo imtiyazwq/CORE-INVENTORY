@@ -100,14 +100,18 @@ export default function App() {
     addToast('success', 'Asset Checked In', `Returned to ${returnLocation}`);
   };
 
+  const handleStockAdjusted = (message: string) => {
+    addToast('success', 'Stock Updated', message);
+  };
+
   // ---------------------------------------------------------------------------
   // handleScanConfirmed — manual entry via ScanInventoryPage
   // Calls storageService.postTransaction() instead of the old CV detection API.
   // ---------------------------------------------------------------------------
 
-  const handleScanConfirmed = (data: {
+  const handleScanConfirmed = async (data: {
     location:       ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku?: string }>;
+    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku: string | null }>;
     operator:       string;
     team?:          string;
     notes:          string;
@@ -129,44 +133,73 @@ export default function App() {
       previewUrl:     data.previewUrl,
     });
 
-    // Post each confirmed item as an inventory transaction via the API
-    data.confirmedItems.forEach(async (det) => {
-      // Use sku if provided; otherwise attempt to match by name against local items
-      const matchedItem = storageState.items.find(
-        (it) =>
-          it.location === data.location &&
-          (it.itemCode === det.sku || it.name.toLowerCase() === det.className.toLowerCase()),
-      );
+    // Post each confirmed item as an inventory transaction, tracking per-item
+    // outcome so the final toast honestly reflects what did and didn't post —
+    // no more claiming "Scan Committed" when some (or all) items were skipped.
+    const results = await Promise.all(
+      data.confirmedItems.map(async (det) => {
+        // Primary: sku resolved at detection/manual-add time from
+        // DEFAULT_YOLO_LABELS (yoloConfig.ts's hand-verified YOLO_CLASS_SKUS
+        // map). Fallback (legacy/defensive only, not the source of truth): an
+        // exact catalog-name match, in case sku somehow wasn't resolved. This
+        // fallback is unreliable by design — YOLO class labels and product
+        // names use different naming schemes and rarely match exactly.
+        let sku = det.sku;
+        if (!sku) {
+          const matchedItem = storageState.items.find(
+            (it) => it.location === data.location && it.name.toLowerCase() === det.className.toLowerCase(),
+          );
+          sku = matchedItem?.itemCode ?? null;
+        }
 
-      const sku        = det.sku || matchedItem?.itemCode;
-      const store_name = data.location;
+        if (!sku) {
+          console.warn(
+            `[App] handleScanConfirmed: No product mapping for "${det.className}" — skipping transaction.`,
+          );
+          return { className: det.className, quantity: det.quantity, ok: false, reason: 'no matching product in inventory' };
+        }
 
-      if (!sku) {
-        console.warn(
-          `[App] handleScanConfirmed: No SKU found for "${det.className}" — skipping transaction.`,
-        );
-        return;
-      }
+        const txn: TransactionPayload = {
+          sku,
+          store_name: data.location,
+          action:      'IN',
+          qty_changed: det.quantity,
+        };
 
-      const txn: TransactionPayload = {
-        sku,
-        store_name,
-        action:      'IN',
-        qty_changed: det.quantity,
-      };
-
-      try {
-        await storageService.postTransaction(txn);
-      } catch (err) {
-        console.warn('[App] postTransaction error for', sku, err);
-      }
-    });
-
-    addToast(
-      'success',
-      'Scan Committed',
-      `Logged ${totalQty} units at ${data.location} by ${data.operator}`,
+        try {
+          const result = await storageService.postTransaction(txn);
+          if (!result.success) {
+            return { className: det.className, quantity: det.quantity, ok: false, reason: result.error || 'rejected by server' };
+          }
+          return { className: det.className, quantity: det.quantity, ok: true, reason: null as string | null };
+        } catch (err) {
+          console.warn('[App] postTransaction error for', sku, err);
+          return { className: det.className, quantity: det.quantity, ok: false, reason: err instanceof Error ? err.message : 'unexpected error' };
+        }
+      }),
     );
+
+    const succeeded    = results.filter((r) => r.ok);
+    const failed       = results.filter((r) => !r.ok);
+    const succeededQty = succeeded.reduce((acc, r) => acc + r.quantity, 0);
+
+    if (failed.length === 0) {
+      addToast('success', 'Scan Committed', `Logged ${totalQty} units at ${data.location} by ${data.operator}`);
+    } else if (succeeded.length === 0) {
+      addToast(
+        'warning',
+        'Scan Not Recorded',
+        `${failed.map((f) => f.className).join(', ')} could not be added: no matching product in inventory.`,
+      );
+    } else {
+      addToast('success', 'Scan Partially Committed', `Logged ${succeededQty} units at ${data.location}: ${succeeded.map((s) => s.className).join(', ')}.`);
+      addToast(
+        'warning',
+        'Some Items Skipped',
+        `${failed.map((f) => `${f.className} (${f.reason})`).join('; ')}`,
+      );
+    }
+
     setActivePage('dashboard');
   };
 
@@ -287,6 +320,7 @@ export default function App() {
                 items={storageState.items}
                 onCheckoutItem={handleCheckout}
                 onCheckinItem={handleCheckin}
+                onStockAdjusted={handleStockAdjusted}
               />
             )}
 

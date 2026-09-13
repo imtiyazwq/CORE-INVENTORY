@@ -15,6 +15,7 @@ import {
   MapPin,
   Tag,
   Package,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { InventoryItem, AssetType, ItemStatus, ValidLocation } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
@@ -26,17 +27,20 @@ import {
   SortDirection,
 } from '../services/inventoryService';
 import { CheckoutModal } from '../components/CheckoutModal';
+import { ConfirmScanModal } from '../components/ConfirmScanModal';
 
 interface InventoryPageProps {
   items: InventoryItem[];
   onCheckoutItem: (itemId: string, user: string, team: string, qty: number) => void;
   onCheckinItem: (itemId: string, returnLocation: ValidLocation, qty: number) => void;
+  onStockAdjusted?: (message: string) => void;
 }
 
 export const InventoryPage: React.FC<InventoryPageProps> = ({
   items,
   onCheckoutItem,
   onCheckinItem,
+  onStockAdjusted,
 }) => {
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,6 +55,9 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
 
   // Checkout Modal State
   const [activeModalItem, setActiveModalItem] = useState<InventoryItem | null>(null);
+
+  // Stock Adjustment Modal State (IN / OUT / ADJUSTMENT)
+  const [adjustModalItem, setAdjustModalItem] = useState<InventoryItem | null>(null);
 
   // Extract unique existing teams for filter dropdown (clean, no "Unassigned")
   const uniqueTeams = useMemo(() => {
@@ -407,30 +414,41 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
 
                     {/* Actions */}
                     <td className="px-3.5 py-2.5 text-right">
-                      {isCheckedOut && !isConsumable ? (
+                      <div className="flex items-center justify-end gap-1.5">
                         <button
-                          onClick={() => setActiveModalItem(item)}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors inline-flex items-center gap-1"
+                          onClick={() => setAdjustModalItem(item)}
+                          title="Add, remove, or correct stock quantity"
+                          className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md transition-colors inline-flex items-center gap-1"
                         >
-                          <RotateCcw className="w-3 h-3" />
-                          Check In
+                          <SlidersHorizontal className="w-3 h-3" />
+                          Adjust Stock
                         </button>
-                      ) : hasAvailable ? (
-                        <button
-                          onClick={() => setActiveModalItem(item)}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-[#005f60] bg-teal-50 hover:bg-teal-100/80 border border-teal-200 rounded-md transition-colors inline-flex items-center gap-1"
-                        >
-                          <UserCheck className="w-3 h-3" />
-                          Check Out
-                        </button>
-                      ) : (
-                        <button
-                          disabled
-                          className="px-2 py-1 text-[11px] font-medium text-slate-400 bg-slate-100 rounded-md cursor-not-allowed"
-                        >
-                          Unavailable
-                        </button>
-                      )}
+
+                        {isCheckedOut && !isConsumable ? (
+                          <button
+                            onClick={() => setActiveModalItem(item)}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors inline-flex items-center gap-1"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Check In
+                          </button>
+                        ) : hasAvailable ? (
+                          <button
+                            onClick={() => setActiveModalItem(item)}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-[#005f60] bg-teal-50 hover:bg-teal-100/80 border border-teal-200 rounded-md transition-colors inline-flex items-center gap-1"
+                          >
+                            <UserCheck className="w-3 h-3" />
+                            Check Out
+                          </button>
+                        ) : (
+                          <button
+                            disabled
+                            className="px-2 py-1 text-[11px] font-medium text-slate-400 bg-slate-100 rounded-md cursor-not-allowed"
+                          >
+                            Unavailable
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -468,6 +486,16 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
           onClose={() => setActiveModalItem(null)}
           onConfirmCheckout={onCheckoutItem}
           onConfirmReturn={onCheckinItem}
+        />
+      )}
+
+      {/* Stock Adjustment Modal (IN / OUT / ADJUSTMENT) */}
+      {adjustModalItem && (
+        <ConfirmScanModal
+          item={adjustModalItem}
+          isOpen={true}
+          onClose={() => setAdjustModalItem(null)}
+          onSuccess={onStockAdjusted}
         />
       )}
     </div>

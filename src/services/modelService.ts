@@ -5,7 +5,7 @@ import {
   PipelineDiagnostics,
   YOLOClassLabel,
 } from '../types';
-import { MODEL_CONFIG, YOLO_CLASSES, YOLO_CLASS_CATEGORIES } from './yoloConfig';
+import { MODEL_CONFIG, YOLO_CLASSES, YOLO_CLASS_CATEGORIES, YOLO_CLASS_SKUS } from './yoloConfig';
 import { preprocessImageToNCHW, LetterboxInfo } from './imagePreprocessor';
 import { TFLiteModelLoader, LoadedTFLiteModel } from './tfliteModelLoader';
 import { runTFLiteInference } from './tfliteInference';
@@ -45,6 +45,7 @@ export const DEFAULT_YOLO_LABELS: YOLOClassLabel[] = YOLO_CLASSES.map((label, in
   index,
   label,
   category: YOLO_CLASS_CATEGORIES[label] || 'Electronics & Robotics',
+  sku: YOLO_CLASS_SKUS[label] ?? null,
 }));
 
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {

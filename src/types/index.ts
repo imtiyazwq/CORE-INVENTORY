@@ -113,6 +113,11 @@ export interface YOLOClassLabel {
   index: number;
   label: string;
   category: string;
+  // Real product catalog SKU for this class, hand-verified against the
+  // product database (see yoloConfig.ts's YOLO_CLASS_SKUS). null means no
+  // product mapping exists — a scan/manual-add of this class must not post a
+  // transaction, since there's nothing to attribute it to.
+  sku: string | null;
 }
 
 export type YOLOClassMapping = YOLOClassLabel;

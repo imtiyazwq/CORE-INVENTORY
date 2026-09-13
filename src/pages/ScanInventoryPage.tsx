@@ -33,7 +33,7 @@ import { BoundingBoxOverlay } from '../components/BoundingBoxOverlay';
 interface ScanInventoryPageProps {
   onScanConfirmed: (scanData: {
     location: ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number }>;
+    confirmedItems: Array<{ className: string; quantity: number; confidence: number; sku: string | null }>;
     operator: string;
     team?: string;
     notes: string;
@@ -51,6 +51,10 @@ interface ConfirmedItemRow {
   quantity: number;
   confidence: number;
   isManual?: boolean;
+  // Real product SKU resolved from DEFAULT_YOLO_LABELS at detection/add time.
+  // null means this class has no product mapping (see yoloConfig.ts's
+  // YOLO_CLASS_SKUS) — it must not be posted as a transaction.
+  sku: string | null;
 }
 
 export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
@@ -273,6 +277,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
                   quantity: item.count,
                   confidence: item.averageConfidence,
                   isManual: false,
+                  sku: labelMeta?.sku ?? null,
                 });
               });
 
@@ -361,6 +366,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
           quantity: item.count,
           confidence: item.averageConfidence,
           isManual: false,
+          sku: labelMeta?.sku ?? null,
         };
       });
 
@@ -405,6 +411,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
           quantity: 1,
           confidence: 1.0,
           isManual: true,
+          sku: labelMeta?.sku ?? null,
         },
       ]);
     }
@@ -422,6 +429,7 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
         className: it.className,
         quantity: it.quantity,
         confidence: it.confidence,
+        sku: it.sku,
       })),
       operator: operator.trim() || currentUser?.userName || 'John Smith',
       team: currentUser?.teamName,
@@ -430,8 +438,11 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
       previewUrl: uploadedResult?.dataUrl,
     });
 
+    // Submitted for processing — App.tsx's toast (after the async transaction
+    // calls resolve) is the authoritative success/failure report, since not
+    // every item here is guaranteed to have a resolvable product SKU.
     setConfirmSuccessMessage(
-      `Successfully logged ${totalConfirmedUnits} units across ${confirmedItems.length} items to ${selectedLocation} (${rackShelf})!`
+      `Submitted ${totalConfirmedUnits} units across ${confirmedItems.length} items at ${selectedLocation} (${rackShelf}) for processing — see the confirmation notice.`
     );
 
     setTimeout(() => {
