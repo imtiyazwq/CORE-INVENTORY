@@ -3,13 +3,19 @@ import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore"; // Import Firestore, NOT analytics[cite: 1]
 import { getAuth, signInAnonymously } from "firebase/auth";
 
+// Read from VITE_FIREBASE_* env vars (set in .env.local locally, and as
+// dashboard Environment Variables on Vercel — see PROJECT_STATUS.md's
+// deployment section) with the known-working values as fallback defaults,
+// so this keeps working even where those vars aren't set. This is public
+// client config, not a secret — safe to expose in the bundle either way;
+// see firestore.rules for what actually protects the data.
 const firebaseConfig = {
-    apiKey: "AIzaSyCrWLmBLhNCk-J0wqkZAreMvNuweL_pmIQ",
-    authDomain: "petrosainsteamb.firebaseapp.com",
-    projectId: "petrosainsteamb",
-    storageBucket: "petrosainsteamb.firebasestorage.app",
-    messagingSenderId: "598838859366",
-    appId: "1:598838859366:web:e33223e95e502b403f7fa7",
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCrWLmBLhNCk-J0wqkZAreMvNuweL_pmIQ",
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "petrosainsteamb.firebaseapp.com",
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "petrosainsteamb",
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "petrosainsteamb.firebasestorage.app",
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "598838859366",
+    appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:598838859366:web:e33223e95e502b403f7fa7",
 };
 
 const app = initializeApp(firebaseConfig);

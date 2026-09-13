@@ -1,0 +1,22 @@
+# Flask backend dependencies for CORE-INVENTORY (database/app.py).
+# Pinned to versions already tested locally in this project's .venv.
+#
+# Direct imports checked against app.py / inventory_manager.py / init_db.py:
+#   app.py              -> flask, flask_cors, werkzeug.security
+#   inventory_manager.py -> firebase_admin (+ its own google-cloud-firestore /
+#                           google-auth sub-dependencies, resolved automatically
+#                           by pip — not pinned here directly)
+#   init_db.py          -> stdlib only (sqlite3, os, sys)
+
+Flask==3.1.3
+Flask-Cors==6.0.5
+Werkzeug==3.1.8
+firebase-admin==7.5.0
+python-dotenv==1.2.3
+
+# Production WSGI server for Render's start command (app.py's own
+# `app.run(debug=True)` is dev-only — gunicorn imports the `app` object
+# directly and binds to Render's $PORT, so app.py needs no changes for this).
+# Linux-only (relies on os.fork) — this is fine for Render, not for local
+# Windows dev, which keeps using `python app.py` as before.
+gunicorn==23.0.0

@@ -1,4 +1,5 @@
 import { UserAccount } from '../types';
+import { API_BASE_URL } from './apiConfig';
 
 const AUTH_USER_KEY = 'core_inventory_current_user_v2';
 
@@ -81,7 +82,7 @@ class AuthService {
     const trimmedId = userId.trim().toLowerCase();
 
     try {
-      const response = await fetch('/api/login', {
+      const response = await fetch(`${API_BASE_URL}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include', // send/receive session cookie
@@ -129,12 +130,77 @@ class AuthService {
   }
 
   /**
+   * Register via Flask /api/register endpoint (open registration — see
+   * PROJECT_STATUS.md for the tradeoff this carries). New accounts are
+   * always created server-side with role 'Staff'.
+   *
+   * AuthPage.tsx's signup form doesn't collect a separate "full name" field,
+   * so one is derived from the userId (e.g. "aina_07" -> "Aina 07") unless
+   * userName is explicitly given.
+   *
+   * Registration alone doesn't establish a Flask session — immediately
+   * calls login() with the same credentials afterward so the user isn't
+   * asked to sign in a second time.
+   */
+  public async signUp(data: {
+    userId: string;
+    userName?: string;
+    teamName: string;
+    password: string;
+  }): Promise<{ success: boolean; message?: string; user?: UserAccount }> {
+    const trimmedId = data.userId.trim().toLowerCase();
+    if (!trimmedId) {
+      return { success: false, message: 'User ID is required.' };
+    }
+    if (!data.teamName.trim()) {
+      return { success: false, message: 'Team Name is required.' };
+    }
+    if (!data.password) {
+      return { success: false, message: 'Password is required.' };
+    }
+
+    const formattedName =
+      data.userName?.trim() ||
+      trimmedId
+        .split(/[._-]/)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' ');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          userId: trimmedId,
+          password: data.password,
+          fullName: formattedName,
+          team: data.teamName.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        return { success: false, message: errData.error || 'Registration failed.' };
+      }
+
+      return await this.login(trimmedId, data.password);
+    } catch (networkError) {
+      console.warn('[AuthService] Server unreachable during registration:', networkError);
+      return {
+        success: false,
+        message: 'Cannot reach server. Please check your connection.',
+      };
+    }
+  }
+
+  /**
    * Logout via Flask /api/logout endpoint.
    * Always clears local session regardless of server response.
    */
   public async logout(): Promise<void> {
     try {
-      await fetch('/api/logout', {
+      await fetch(`${API_BASE_URL}/api/logout`, {
         method: 'POST',
         credentials: 'include',
       });

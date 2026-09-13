@@ -3,6 +3,7 @@ database/app.py
 Flask Application — CORE-INVENTORY System
 
 Endpoints:
+  POST /api/register                – self-service registration (open, no admin gate — see PROJECT_STATUS.md)
   POST /api/login                   – authenticate, log LOGIN, return user info
   POST /api/logout                  – log LOGOUT, clear session
   GET  /api/me                      – return current session user
@@ -18,11 +19,20 @@ import sqlite3
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 
 # Ensure the database package directory is in sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
+
+# Explicit .env loading — must run before importing inventory_manager, since
+# its USE_FIREBASE flag is read from os.environ at module-import time. Locally
+# this is a no-op unless database/.env exists (see .env.example); on Render,
+# real values come from the dashboard's environment variables regardless, but
+# loading a .env here too means the same mechanism works in both places
+# instead of "silently defaults, hope the platform sets it."
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from inventory_manager import (
     process_sync_queue,
@@ -43,6 +53,10 @@ CORS(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        # PLACEHOLDER — once the frontend is deployed on Vercel, replace this
+        # line with the real URL, e.g. "https://core-inventory.vercel.app"
+        # (no trailing slash). See PROJECT_STATUS.md's deployment section.
+        "https://REPLACE-WITH-VERCEL-URL.vercel.app",
     ],
 )
 DB_PATH = os.path.join(BASE_DIR, "inventory_system.db")
@@ -74,8 +88,68 @@ def _log_user_action(user_id: str, action: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Auth — /api/login  /api/logout  /api/me
+# Auth — /api/register  /api/login  /api/logout  /api/me
 # ---------------------------------------------------------------------------
+
+@app.route("/api/register", methods=["POST"])
+def register():
+    """
+    Self-service registration. Intentionally open — no admin approval or
+    invite gate (explicit product decision, see PROJECT_STATUS.md for the
+    security tradeoff this carries). New accounts always default to role
+    'Staff' — never 'Admin', regardless of anything the client sends; the
+    request body's role (if any) is never even read here.
+    """
+    data      = request.get_json(silent=True) or {}
+    user_id   = (data.get("userId") or "").strip().lower()
+    password  = data.get("password") or ""
+    full_name = (data.get("fullName") or "").strip()
+    team      = (data.get("team") or "").strip()
+
+    if not all([user_id, password, full_name, team]):
+        return jsonify({"error": "userId, password, fullName, and team are all required."}), 400
+
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long."}), 400
+
+    conn   = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM users WHERE user_id = ?;", (user_id,))
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "This User ID is already taken. Please choose another."}), 409
+
+    # Same hashing method as the seeded admin account (import_xlsx_data.py's
+    # seed_admin()) — generate_password_hash() with no method override, so
+    # both use werkzeug's current default.
+    pw_hash = generate_password_hash(password)
+
+    try:
+        cursor.execute(
+            """INSERT INTO users (user_id, password_hash, full_name, team, role)
+               VALUES (?, ?, ?, ?, 'Staff');""",
+            (user_id, pw_hash, full_name, team),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Backstop against a race with the SELECT check above — the UNIQUE
+        # constraint on users.user_id is the real guarantee against a silent
+        # overwrite, not the pre-check.
+        return jsonify({"error": "This User ID is already taken. Please choose another."}), 409
+    finally:
+        conn.close()
+
+    return jsonify({
+        "message": "Registration successful.",
+        "user": {
+            "userId":   user_id,
+            "fullName": full_name,
+            "team":     team,
+            "role":     "Staff",
+        },
+    }), 201
+
 
 @app.route("/api/login", methods=["POST"])
 def login():

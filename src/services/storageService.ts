@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { VALID_LOCATIONS } from '../data/locations';
 import { DEFAULT_MODEL_CONFIG } from './modelService';
+import { API_BASE_URL } from './apiConfig';
 
 // Read the flag from environment variables
 const USE_FIREBASE = import.meta.env.VITE_USE_FIREBASE === 'true';
@@ -239,8 +240,8 @@ class StorageService {
       }
 
       const url = storeName
-        ? `/api/inventory?store_name=${encodeURIComponent(storeName)}`
-        : '/api/inventory';
+        ? `${API_BASE_URL}/api/inventory?store_name=${encodeURIComponent(storeName)}`
+        : `${API_BASE_URL}/api/inventory`;
 
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) {
@@ -340,7 +341,7 @@ class StorageService {
     // Admin SDK to update Firestore server-side when USE_FIREBASE is enabled there.
     // (Firestore security rules block client-side writes entirely.)
     try {
-      const res = await fetch('/api/inventory/transaction', {
+      const res = await fetch(`${API_BASE_URL}/api/inventory/transaction`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -524,7 +525,7 @@ class StorageService {
         }
 
         if (txn) {
-          const res = await fetch('/api/inventory/transaction', {
+          const res = await fetch(`${API_BASE_URL}/api/inventory/transaction`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },

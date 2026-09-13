@@ -1,14 +1,17 @@
 # CORE-INVENTORY — Project Status & Handoff
 
-*Last updated: 2026-09-13 — Firestore write path (via Flask + Admin SDK) and
-Firestore Security Rules are both done and verified live. Two separate UI
-fixes landed this session: a manual IN/OUT/ADJUSTMENT stock transaction UI on
-the Inventory page (Section 9), and — the actual root cause of the original
-bug report — a broken className→SKU identity mapping on the Scan Inventory
-page that silently dropped 13 of 15 detectable item types, including NodeMCU
-(Section 10, supersedes Section 9's framing as "the" bug). Next up: manual
-browser click-through of both fixes, a product/model decision on the 6
-classes with no catalog mapping (Section 10), then deployment (Section 5).*
+*Last updated: 2026-09-13 — Firestore write path, Security Rules, the
+SKU-identity fix, Adjust Stock, Stock Check, and open self-registration are
+all done and tested locally (Sections 9–16). Deployment prep for
+Flask→Render + frontend→Vercel is done and tested on the code side
+(Section 17) — `requirements.txt`, `.env` loading, CORS placeholder,
+absolute API URLs, Firebase env-var wiring. **Not yet done: the actual
+Render/Vercel account creation and dashboard setup** — those are steps only
+the user can do; a full walkthrough was delivered in chat, and this doc
+needs the real URLs filled in (CORS origin, `VITE_API_URL`) once they
+exist. Explicit priority for this pass: working online over hardening or
+scale — see Section 17's "still open" list for what that deliberately
+leaves unresolved.*
 
 This file exists so a new Claude Code session (or any future contributor) can pick up
 exactly where things left off without re-explaining context. Read this fully before
@@ -1081,3 +1084,330 @@ codebase references this specific button or depends on it being present.
 visually gone from the Inventory table, and that the rest of the row's
 actions — Check Out/Check In — still render normally). No browser
 automation tool is available in this environment.
+
+---
+
+## 15. Restored: Self-Service Registration (2026-09-13)
+
+**Explicit product decision, not a default I chose**: registration is now
+**open** — any visitor can create an account via `POST /api/register`, with
+no admin approval, invite code, or gate of any kind. This restores the
+`AuthPage.tsx` "Create Account" tab's original main-branch capability,
+which had been dead (calling a `signUp()` method that didn't exist —
+`tsc --noEmit`'s longest-standing pre-existing error) since the Firestore
+migration replaced the old client-side/localStorage auth fallback.
+
+### ⚠️ Known security tradeoff — revisit before wider/public deployment
+
+**Open registration means anyone who can reach this server can create a
+real, working account with no gatekeeping.** This is fine for a controlled
+pilot/demo with a known user base, but before this goes anywhere more
+exposed (a public URL, an unmanaged network, production data with real
+consequences), reconsider:
+- Requiring an invite code, an admin-approval step, or restricting
+  registration to an allow-listed email/organization domain.
+- Rate-limiting `/api/register` (currently unlimited — nothing stops a
+  script from mass-creating accounts).
+- Whether `Staff` role by default is enough gating on its own, given
+  `Staff` can already post IN/OUT/ADJUSTMENT inventory transactions
+  (everything except `/api/sync-queue/process`, which is `Admin`-only).
+
+This tradeoff is deliberate for now, not overlooked — flagging it here so
+it's a conscious decision to revisit, not a surprise later.
+
+### What was built
+
+- **`POST /api/register` added to `database/app.py`**, matching the
+  `users` table exactly (`user_id`, `password_hash`, `full_name`, `team`,
+  `role`): accepts `userId`, `password`, `fullName`, `team`; rejects with
+  `400` if any are missing or password is under 6 characters; rejects with
+  `409` (not a silent overwrite) if `userId` already exists — checked with a
+  `SELECT` first for a clean error message, backed by a `try/except
+  sqlite3.IntegrityError` on the `INSERT` as the real guarantee against a
+  race. Password hashed with `generate_password_hash()` — the exact same
+  call, same werkzeug default method, with no override, as
+  `import_xlsx_data.py`'s `seed_admin()` uses for the seeded `adam` account,
+  so a self-registered password hash and the seeded admin's are produced
+  identically.
+- **New accounts are always `role='Staff'`, hardcoded in the `INSERT`
+  itself — the request body's `role` field, if a client ever sent one, is
+  never even read.** This holds regardless of the open-registration
+  decision above; the two are independent safeguards.
+- **`authService.ts`'s `signUp()` reconnected** to actually call `/api/register`
+  (previously a "existed in `AuthPage.tsx`'s call site with no matching
+  method" gap) — same pattern as `login()`: `credentials: 'include'`,
+  JSON body, try/catch network-error handling. `AuthPage.tsx`'s signup form
+  never collects a separate "full name" field, so one is derived from the
+  `userId` (e.g. `aina_07` → `Aina 07`) unless explicitly given — the exact
+  formatting main's old client-side registration used.
+  **Deliberately not restored**: main's old fallback of *also* writing a
+  local `localStorage`-only account when the server call failed. That
+  fallback is what made main's auth internally inconsistent (a "logged in"
+  user the server had never heard of) — Sections 9–10 already removed the
+  equivalent fallback from `login()` for the same reason; reintroducing it
+  here for `signUp()` would just recreate that bug in a new place.
+- **Registration now logs the user in immediately, with no second manual
+  step**: `/api/register` itself doesn't establish a Flask session (only
+  `/api/login` does — it's the one place `session[...]` gets set). Rather
+  than hand back a locally-fabricated user object like main used to (which
+  would leave the browser believing it's authenticated while Flask's
+  session cookie was never actually set — every subsequent
+  session-gated call, e.g. posting a transaction, would then 401), `signUp()`
+  calls `this.login(userId, password)` immediately after a successful
+  `/api/register`, and returns *that* result. One click in
+  `AuthPage.tsx`'s "Register & Log In" button produces a real, working
+  session — not just the appearance of one.
+
+### Testing performed
+
+- `npx tsc --noEmit` — **zero errors of any kind**, for the first time this
+  session. This was the one remaining pre-existing error tracked since
+  Section 10; it's now gone because the real fix (implementing `signUp()`)
+  landed instead of being worked around.
+- `npx vite build` — production build succeeds.
+- **Real end-to-end HTTP test against the running Flask dev server**
+  (`database/app.py`, port 5000), using a fresh `test_reg_<timestamp>`
+  username to avoid colliding with anything real, cleaned up from the local
+  `users` table afterward. 12 checks, all passed:
+  - Register a new user → `201`, response echoes `role: 'Staff'`.
+  - Log in with those same credentials immediately after → `200`, role
+    still `'Staff'`.
+  - `GET /api/me` with the resulting session cookie → confirms
+    `authenticated: true`, `role: 'Staff'` — the actual Flask session, not
+    just a client-side belief.
+  - Login with the right user but a wrong password → `401` (hashing
+    actually verifies, not a rubber-stamp).
+  - **Registering the same `userId` a second time (different password,
+    different name) → `409`, not a silent overwrite.** Confirmed by then
+    logging in with the *original* password (still works) and the
+    *second attempt's* password (rejected, `401`) — proof the first
+    account's row was never touched.
+  - Missing `fullName`/`team` → `400`. Password under 6 characters → `400`.
+- **Not tested**: the actual browser click-path through `AuthPage.tsx`'s
+  "Create Account" tab (filling the form, clicking "Register & Log In",
+  landing straight in the dashboard with no second login screen). No
+  browser automation tool is available in this environment. Given the HTTP
+  test above already proves the full server-side contract
+  (`/api/register` → `/api/login` → authenticated session) works exactly
+  as `signUp()` calls it, the remaining risk is purely in the React form
+  wiring itself (already unchanged — `AuthPage.tsx`'s `handleSignUp` call
+  site was untouched, only the previously-missing method it calls was
+  implemented).
+
+---
+
+## 16. Fix: test_db.py Rewritten for the Current Schema (2026-09-13)
+
+**The old `test_db.py` tested a schema that no longer exists.** It
+referenced `process_detection_batch()`, `audit_inventory_discrepancies()`,
+numeric `product_id`/`store_id` foreign keys, and an `image_detections_log`
+table — all pre-refactor concepts from before the Firestore migration and
+the SKU/store_name composite-key redesign
+([Section 10](#10-root-cause-fix-classname--sku-identity-2026-09-13)'s
+"What was found" section already flagged this file was stale, but it was
+out of scope for that fix). It could not have run against current
+`schema.sql` or `inventory_manager.py` — those functions don't exist
+anymore.
+
+### What was built
+
+Rewrote it entirely as `unittest.TestCase` tests (real, runnable —
+not print statements) against `record_transaction()`, the SQLite
+counterpart to `record_transaction_firestore()`, using the actual current
+schema:
+
+- **`setUp()`/`tearDown()`** create and destroy an isolated
+  `test_inventory_system.db` per test (via `init_database(..., force_reset=True)`),
+  seeded with exactly what `record_transaction()`'s own validation requires:
+  one `users` row, one `stores` row, one `products` row, and one
+  `store_inventory` row (`qty=avail_qty=50`) — mirroring this session's
+  earlier direct-Firestore test pattern, but for the local SQLite path.
+- **IN**: confirms `qty` and `avail_qty` both increase by the same amount.
+- **OUT**: confirms `avail_qty` decreases while `qty` stays fixed (the
+  documented "physical qty unchanged on check-out" behavior); a separate
+  test confirms the exact boundary (`qty_changed == avail_qty` succeeds,
+  driving `avail_qty` to 0 and `status` to `'Out of Stock'`).
+- **OUT exceeding available stock**: confirms `ValueError` is raised with
+  the expected message, **and** that the rejected transaction left
+  `store_inventory` completely untouched and wrote **zero** rows to
+  `inventory_logs` — not just that an exception happened.
+- **ADJUSTMENT**: confirms both increase and decrease move **both** `qty`
+  and `avail_qty` (unlike IN/OUT), and that a large enough decrease clamps
+  at 0 rather than going negative.
+- **`inventory_logs` correctness**: runs one IN, one OUT, one ADJUSTMENT in
+  sequence and asserts, per row, the exact `sku`/`store_name`/`user_id`/
+  `action`/`qty_changed` recorded — including the signed-delta semantics
+  (IN logs the positive magnitude as-is; OUT logs it negated; ADJUSTMENT
+  logs exactly the signed delta given). A separate test confirms a
+  **rejected** OUT doesn't add a log row while a **prior successful**
+  transaction's log entry remains untouched.
+- **Bonus validation coverage** (cheap, same function, not explicitly
+  requested but directly relevant): invalid `action` string, unknown
+  `sku`, unknown `store_name`, and a `(sku, store)` pair with no
+  `store_inventory` row all correctly raise `ValueError` with the expected
+  message.
+
+### Testing performed
+
+- `python -m unittest test_db -v` — **13/13 tests pass** against the real,
+  current `schema.sql` and `inventory_manager.py` (not mocked). Confirmed
+  the isolated `test_inventory_system.db` file is deleted after the run —
+  no leftover test artifacts.
+
+---
+
+## 17. Deployment Prep — Flask→Render, Frontend→Vercel (2026-09-13)
+
+**Explicit priority for this pass, per instruction: get it fully working
+online, not harden it.** All the code-level prep is done and tested below.
+The account-creation/dashboard steps themselves can't be done by me (no
+access to create accounts or click through external dashboards) — see the
+separate walkthrough delivered in chat for those, and come back to update
+this section once URLs exist.
+
+**Branch to deploy from: `refactor_test`.** Confirmed directly
+(`git branch --show-current`) — this is the branch all of Sections 9–16's
+work landed on, and it's what both Render and Vercel should point at.
+
+### What was built
+
+1. **`database/requirements.txt` created.** Checked actual imports in
+   `app.py`/`inventory_manager.py`/`init_db.py` directly rather than
+   guessing: `Flask`, `Flask-Cors`, `Werkzeug` (explicit — `app.py` imports
+   `werkzeug.security` directly, don't rely on it only being pulled in
+   transitively by Flask), `firebase-admin`. Pinned to the exact versions
+   already installed and tested in this project's local `.venv`
+   (`pip freeze`), not arbitrary latest. Added two more, both load-bearing
+   for steps below: `python-dotenv` (step 2) and `gunicorn` (needed for
+   Render's start command — see "Known gap" below for why `python app.py`
+   alone isn't viable there).
+2. **Explicit `.env` loading added to `app.py`**, via `python-dotenv`'s
+   `load_dotenv()`, called *before* `inventory_manager` is imported (its
+   `USE_FIREBASE` flag is read from `os.environ` at module-import time, so
+   load order matters). Previously `USE_FIREBASE` was a bare
+   `os.environ.get(..., "true")` with nothing loading a `.env` file at
+   all — it worked by accident (the default happened to be correct), not by
+   configuration. `database/.env.example` added (committed — the real
+   `database/.env`, if ever created, is already covered by the existing
+   `.gitignore`'s bare `.env` pattern, confirmed by checking it directly
+   rather than assuming).
+3. **CORS origins placeholder added to `app.py`**: a literal
+   `"https://REPLACE-WITH-VERCEL-URL.vercel.app"` entry, clearly commented,
+   sitting alongside the existing localhost origins. Harmless as-is (it
+   doesn't match any real `Origin` header, so it grants nothing) — swap it
+   for the real Vercel URL once step 7 below produces one; see the chat
+   walkthrough for exactly when.
+4. **Firebase Admin service account JSON**: confirmed (again, directly —
+   `git log --all` for the filename, still empty) it has never been
+   committed to any branch. Getting it onto Render is a dashboard step, not
+   a code change — see the chat walkthrough.
+5. **`src/services/apiConfig.ts` added** — one exported constant,
+   `API_BASE_URL`, reading `import.meta.env.VITE_API_URL` with an
+   empty-string fallback (preserves the exact current behavior locally,
+   where Vite's dev proxy — `vite.config.ts`'s `server.proxy['/api']` —
+   handles relative `/api/...` paths). **All 6 relative `/api/...` fetch
+   call sites** (grepped for directly, not assumed complete from memory) —
+   `authService.ts`'s `login()`/`signUp()`/`logout()`, and
+   `storageService.ts`'s `fetchInventory()` and both
+   `postTransaction()`/`syncQueue()` transaction posts — now build their URL
+   as `` `${API_BASE_URL}/api/...` ``. With `VITE_API_URL` unset (true for
+   every local dev run), this is byte-for-byte the same relative path as
+   before — confirmed by grepping the built bundle for `/api/login` and
+   seeing the plain relative string, not a broken template literal.
+6. **`src/services/firebase.ts` now reads `VITE_FIREBASE_*` env vars**
+   (with the existing hardcoded values kept as fallback defaults, so
+   nothing breaks if they're unset). This wasn't asked for directly, but
+   without it, setting `VITE_FIREBASE_*` variables in Vercel's dashboard
+   (step 7) would have had **zero effect** — the config was hardcoded
+   literals in source, not read from `import.meta.env` at all. Fixing this
+   is what makes that env-var guidance actually true instead of a
+   well-intentioned dead end.
+
+### Known gap flagged along the way: `app.py`'s dev server isn't Render-viable as-is
+
+`app.py`'s `if __name__ == "__main__": app.run(host="0.0.0.0", port=5000,
+debug=True)` has two problems for Render specifically: **it hardcodes port
+5000** instead of reading Render's dynamically-assigned `$PORT`, and
+**`debug=True` in a publicly reachable deployment is a real exposure** (an
+unhandled exception serves an interactive in-browser debugger/console by
+default — not just an information leak, an actual remote-code-execution
+surface). Fixed by using `gunicorn app:app --bind 0.0.0.0:$PORT` as
+Render's Start Command instead of `python app.py` — gunicorn imports the
+`app` object directly and never executes that `if __name__ == "__main__"`
+block at all, so **no code change to that block was needed**, it simply
+becomes irrelevant to the deployed process while remaining exactly as-is
+for local dev (`python app.py` still works locally, unchanged).
+
+### Testing performed
+
+- `npx tsc --noEmit` — zero errors (same clean state as Section 15).
+- `npx vite build` — succeeds; confirmed via the built bundle that
+  `/api/login` still resolves as a plain relative path locally (no
+  `VITE_API_URL` set), and the Firebase API key still bakes in correctly
+  after the `firebase.ts` change.
+- **`requirements.txt` verified against a genuinely fresh, isolated venv**
+  (not the project's own `.venv`, which already had everything installed
+  from unrelated prior work — that would have hidden a missing dependency):
+  created a throwaway venv in the scratchpad, `pip install -r
+  requirements.txt` into it with nothing else present, then ran `python -c
+  "import app"` **using that isolated venv's own interpreter** — imported
+  cleanly. This is the actual thing that matters for Render (a clean
+  container installing only what's declared), not just "it works in an
+  environment that already has extra packages." `gunicorn` was confirmed
+  separately to `pip install` cleanly (Linux-only at runtime — Render's
+  container is Linux, so this is fine; not runnable/importable on this
+  local Windows dev machine, which is expected and irrelevant to the
+  deployed target).
+- **`.env` loading verified with a real file, not just reasoning about the
+  code**: confirmed `USE_FIREBASE` still defaults to `True` with no
+  `database/.env` present (unchanged behavior), then created a real
+  `database/.env` with `USE_FIREBASE=false`, re-imported `app`, and
+  confirmed it actually read back as `False` this time — proving
+  `load_dotenv()` is wired in before the point where `inventory_manager`
+  reads the flag. Test file deleted afterward.
+- **Full backend smoke test with everything combined**: started the real
+  Flask dev server (all changes in place — new `requirements.txt`-only
+  deps, `.env` loading, new CORS list) and confirmed `POST /api/login` for
+  `adam`/`password123` still returns `200` with the correct user object.
+  (One incidental side effect of this test — a few extra `LOGIN` rows in
+  the local `inventory_system.db`'s audit table — was reverted afterward,
+  consistent with how test-run noise has been handled throughout this
+  session.)
+- **Not tested, and can't be from here**: the actual Render/Vercel
+  dashboards, the deployed public URLs, or a real browser hitting them —
+  all of that requires the account-creation steps only you can do. See the
+  chat walkthrough for the exact order and what to send back once each URL
+  exists.
+
+### What's still open after this pass
+
+- Render account creation, Web Service setup, environment variables, and
+  the Secret File upload for the Firebase Admin JSON — dashboard steps, not
+  code. Walkthrough delivered in chat.
+- Vercel account creation, project import, and environment variables —
+  same. Walkthrough delivered in chat.
+- Once both URLs exist: swap `app.py`'s CORS placeholder for the real
+  Vercel URL, and set the real `VITE_API_URL` in Vercel pointing at the
+  real Render URL. Both are quick edits once the URLs are known — send them
+  back and this gets finished immediately.
+- **`server.ts`** (repo root) is a separate, unrelated Express+`node:sqlite`
+  reimplementation of a subset of this same API, against the *old*
+  pre-refactor numeric-schema (`product_id`, `image_detections_log`) —
+  exactly the kind of staleness [Section 16](#16-fix-test_dbpy-rewritten-for-the-current-schema-2026-09-13)
+  found in the old `test_db.py`. It is **not used by the current
+  architecture** (the frontend talks to Flask, not this), and Vercel's
+  default `npm run build` script would build it into `dist/server.cjs` for
+  no reason (wasted build time, not wrong, just pointless) — recommend
+  overriding Vercel's Build Command to `vite build` alone, and leaving
+  `server.ts` untouched/unused rather than fixing or removing it now, since
+  that's a separate decision outside this deployment task's scope.
+- Longer-term hosting question already flagged in Section 5/8, still
+  unresolved: the `users`/`user_logs`/`inventory_logs` SQLite tables
+  persist as a file *inside* the deployed container. Render's free/starter
+  tiers do **not** guarantee that file survives a redeploy or a
+  restart-after-inactivity — this is fine to defer for a prototype (per
+  this session's explicit priority), but is a real data-loss risk for the
+  `users` table specifically (new self-registered accounts could vanish on
+  a redeploy) that should be revisited before this is anything more than a
+  prototype. A Render persistent disk (paid tier) or migrating `users` to
+  Firestore too are the two obvious fixes, neither done here.
