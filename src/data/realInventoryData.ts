@@ -1,8 +1,8 @@
-import { InventoryItem, ItemStatus } from '../types';
+import { InventoryItem } from '../types';
 
 // Exact inventory seed rebuilt directly from [DATASET_FOR_AI_INNOVATOR] Inventory_Data_with_Photos.xlsx.
 // Source columns H (Total Quantity) and I (Available Quantity) are copied without modification.
-export const INVENTORY_DATASET_VERSION = '2026-09-13-exact-xlsx-v1';
+export const INVENTORY_DATASET_VERSION = '2026-09-13-exact-xlsx-v2-clean-status';
 
 const SOURCE_INVENTORY_DATASET: InventoryItem[] = [
   // Excel Inventory_Master row 2
@@ -2188,54 +2188,23 @@ const SOURCE_INVENTORY_DATASET: InventoryItem[] = [
 ];
 
 /**
- * The spreadsheet Status column is blank. Per the requested website behaviour,
- * YOLO/Settings items remain Available for scan -> Stock Check reconciliation,
- * while other items cycle through demonstration statuses.
+ * The spreadsheet Status column is blank, so the factory dataset must not
+ * invent Missing/Lost/Damaged/Disposed states.
  *
- * IMPORTANT: the source ledger quantity is never changed. For a row whose whole
- * record is Missing, Lost, Damaged, Under Maintenance, Disposed, or Checked Out,
- * the derived availableQuantity is set to 0 so the UI cannot say both
- * "66 available" and "Lost" at the same time.
+ * Every imported item starts from the quantities supplied by the spreadsheet
+ * and with status "Available". Real operational states are created later by
+ * checkout/check-in activity and Stock Check reconciliation.
+ *
+ * This avoids misleading records such as "80 / 80 available" while also
+ * labelling the whole SKU as "Lost".
  */
-const YOLO_STOCK_ITEM_NAMES = new Set([
-  'arduino uno',
-  'a4 colored paper',
-  'sticky note',
-  'breadboard',
-  'paper cup',
-  'safety goggle',
-  'nodemcu',
-  'pen',
-  'scissor',
-  'popsicle stick',
-]);
-
-const NON_YOLO_STATUSES: ItemStatus[] = [
-  'Available',
-  'Checked Out',
-  'Missing',
-  'Lost',
-  'Damaged',
-  'Under Maintenance',
-  'Disposed',
-];
-
 export const REAL_INVENTORY_DATASET: InventoryItem[] = SOURCE_INVENTORY_DATASET.map(
-  (item, index) => {
-    const isYOLOStockItem = YOLO_STOCK_ITEM_NAMES.has(item.name.trim().toLowerCase());
-    const status: ItemStatus = isYOLOStockItem
-      ? 'Available'
-      : NON_YOLO_STATUSES[index % NON_YOLO_STATUSES.length];
-
-    // A whole-row unavailable status must not simultaneously advertise stock as
-    // available. Keep the spreadsheet's total quantity intact, but expose zero
-    // currently available units for those statuses.
-    const availableQuantity = status === 'Available' ? item.availableQuantity : 0;
-
-    return {
-      ...item,
-      status,
-      availableQuantity,
-    };
-  }
+  (item) => ({
+    ...item,
+    status: 'Available',
+    availableQuantity: Math.min(
+      Math.max(0, Math.floor(Number(item.quantity) || 0)),
+      Math.max(0, Math.floor(Number(item.availableQuantity) || 0))
+    ),
+  })
 );
