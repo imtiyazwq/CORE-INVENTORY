@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   GitCompare,
   MapPin,
@@ -20,6 +20,7 @@ import { YOLO_CLASS_DEFINITIONS } from '../services/yoloConfig';
 interface StockCheckPageProps {
   items: InventoryItem[];
   recentScans: ScanRecord[];
+  initialLocation?: ValidLocation;
   onReconcileStock: (
     location: ValidLocation,
     updates: Array<{ itemId: string; newQuantity: number; reason: string; isNew?: boolean; name?: string; category?: string }>
@@ -41,10 +42,11 @@ interface ComparisonRow {
 export const StockCheckPage: React.FC<StockCheckPageProps> = ({
   items,
   recentScans,
+  initialLocation = VALID_LOCATIONS[0],
   onReconcileStock,
 }) => {
-  // Selected Store Location (Strictly 4 locations)
-  const [selectedLocation, setSelectedLocation] = useState<ValidLocation>(VALID_LOCATIONS[0]);
+  // Start Stock Check at the location that created the pending scan.
+  const [selectedLocation, setSelectedLocation] = useState<ValidLocation>(initialLocation);
   const [filterDiscrepancyOnly, setFilterDiscrepancyOnly] = useState(false);
   const [reconcileReason, setReconcileReason] = useState('Quarterly physical stock audit reconciliation');
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -60,8 +62,37 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
   );
 
   const [physicalCounts, setPhysicalCounts] = useState<Record<string, number>>({});
+  const autoLoadedScanIdRef = useRef<string | null>(null);
 
   const normaliseName = (value: string) => value.trim().toLowerCase().replace(/_/g, ' ');
+
+  // When App sends us here after confirming a scan, follow that scan's location.
+  useEffect(() => {
+    setSelectedLocation(initialLocation);
+    setPhysicalCounts({});
+    autoLoadedScanIdRef.current = null;
+  }, [initialLocation]);
+
+  // Automatically copy the newest pending YOLO result into Physical Count once.
+  // This makes the detected quantity visible immediately instead of requiring the
+  // user to press "Load from Recent Scan" after every scan. The scan-id guard
+  // prevents the 2-second cloud refresh from overwriting manual corrections.
+  useEffect(() => {
+    if (!latestPendingScan) return;
+    if (autoLoadedScanIdRef.current === latestPendingScan.id) return;
+
+    const counts: Record<string, number> = {};
+    for (const detected of latestPendingScan.itemsDetected) {
+      const existing = locationItems.find(
+        (item) => normaliseName(item.name) === normaliseName(detected.className)
+      );
+      const id = existing?.id || `NEW:${latestPendingScan.id}:${normaliseName(detected.className)}`;
+      counts[id] = detected.quantity;
+    }
+
+    setPhysicalCounts(counts);
+    autoLoadedScanIdRef.current = latestPendingScan.id;
+  }, [latestPendingScan, locationItems]);
 
   // Build registered rows plus YOLO-detected-but-not-yet-registered rows.
   // New rows can only become inventory records after the user commits Stock Check.
@@ -255,6 +286,7 @@ export const StockCheckPage: React.FC<StockCheckPageProps> = ({
             onChange={(e) => {
               setSelectedLocation(e.target.value as ValidLocation);
               setPhysicalCounts({});
+              autoLoadedScanIdRef.current = null;
             }}
             className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#005f60] bg-white text-slate-800 cursor-pointer w-full md:w-64"
           >

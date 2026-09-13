@@ -20,6 +20,7 @@ export const App: React.FC = () => {
   const [storageState, setStorageState] = useState<StorageState>(() => storageService.getState());
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [stockCheckInitialLocation, setStockCheckInitialLocation] = useState<ValidLocation>(VALID_LOCATIONS[0]);
 
   useEffect(() => {
     const unsubscribe = storageService.subscribe((newState) => setStorageState(newState));
@@ -84,6 +85,11 @@ export const App: React.FC = () => {
       notes: scanData.notes || 'YOLO detection awaiting Stock Check verification.',
       previewUrl: scanData.previewUrl,
     });
+
+    // Open Stock Check on the exact location used by this scan.
+    // Without this, Stock Check defaults to STORE 1 and cannot see a pending
+    // scan made at MAKER STUDIO / CHILLAX / CHEMICAL ROOM.
+    setStockCheckInitialLocation(scanData.location);
 
     // DO NOT call addItem() or updateItem() here.
     // Inventory changes only after Stock Check reconciliation.
@@ -250,6 +256,7 @@ export const App: React.FC = () => {
             <StockCheckPage
               items={storageState.items}
               recentScans={storageState.scanHistory}
+              initialLocation={stockCheckInitialLocation}
               onReconcileStock={handleReconcileStock}
             />
           )}
