@@ -69,7 +69,7 @@ class AuthService {
       return { success: true, user };
     } catch (error) {
       console.error('[AuthService] Login failed:', error);
-      return { success: false, message: 'Cannot reach the VisionStock server. Please try again.' };
+      return { success: false, message: 'Cannot reach the CORE INVENTORY server. Please try again.' };
     }
   }
 
@@ -98,7 +98,7 @@ class AuthService {
       return { success: true, user };
     } catch (error) {
       console.error('[AuthService] Registration failed:', error);
-      return { success: false, message: 'Cannot reach the VisionStock server. Please try again.' };
+      return { success: false, message: 'Cannot reach the CORE INVENTORY server. Please try again.' };
     }
   }
 

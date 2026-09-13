@@ -200,7 +200,7 @@ export const App: React.FC = () => {
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-[#0f172a] flex items-center justify-center text-white">
-        <div className="text-sm font-semibold">Loading VisionStock...</div>
+        <div className="text-sm font-semibold">Loading CORE INVENTORY...</div>
       </div>
     );
   }
@@ -300,7 +300,7 @@ export const App: React.FC = () => {
 
         <footer className="border-t border-slate-200/80 bg-white py-3 px-6 text-center text-[11px] text-slate-500 shrink-0">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-            <span>VisionStock AI • 4 Verified Storage Locations • Cloud Shared Ledger</span>
+            <span>CORE INVENTORY • 4 Verified Storage Locations • Cloud Shared Ledger</span>
             <span className="font-mono text-slate-400">Cloud Records ({storageState.items.length})</span>
           </div>
         </footer>

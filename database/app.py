@@ -1,4 +1,4 @@
-"""VisionStock backend.
+"""CORE INVENTORY backend.
 
 Production (Render): uses PostgreSQL when DATABASE_URL is present.
 Local development: automatically falls back to SQLite, so Windows users do not
@@ -720,7 +720,7 @@ def frontend(path):
 if __name__ == '__main__':
     init_db()
     print(
-        f"VisionStock backend using {'PostgreSQL' if USE_POSTGRES else 'SQLite'} "
+        f"CORE INVENTORY backend using {'PostgreSQL' if USE_POSTGRES else 'SQLite'} "
         f"on http://127.0.0.1:{os.environ.get('PORT', '5000')}"
     )
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')), debug=False)
