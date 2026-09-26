@@ -6,6 +6,7 @@ need to install PostgreSQL just to run login/signup in VS Code.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -51,6 +52,12 @@ app.config.update(
 
 JSON_COLUMNS = {'item', 'record', 'config_value', 'state_value'}
 _db_initialized = False
+
+# Optional shared secret for the automation-friendly /api/checkout endpoint,
+# so scripts, barcode scanners, or the ESP32 relay can check items out with a
+# header instead of a browser session cookie. Unset means that endpoint is
+# only reachable by an already-logged-in session, same as the rest of the API.
+INVENTORY_API_KEY = os.environ.get('INVENTORY_API_KEY', '').strip()
 
 
 LOCAL_SCHEMA = """
@@ -234,6 +241,25 @@ def login_required(fn):
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized. Please log in.'}), 401
         return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def session_or_api_key_required(fn):
+    """Allow either a logged-in browser session or a valid X-API-Key header.
+
+    Used for the automation-friendly checkout endpoint so a script, barcode
+    scanner, or the ESP32 relay can call it directly with a header instead of
+    having to hold a browser session cookie.
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if 'user_id' in session:
+            return fn(*args, **kwargs)
+        provided_key = request.headers.get('X-API-Key', '')
+        if INVENTORY_API_KEY and hmac.compare_digest(provided_key, INVENTORY_API_KEY):
+            return fn(*args, **kwargs)
+        return jsonify({'error': 'Unauthorized. Log in or provide a valid X-API-Key header.'}), 401
 
     return wrapper
 
@@ -488,6 +514,62 @@ def checkout():
     return jsonify({'item': item}), 200
 
 
+def _find_item_id_by_code(cur, item_code: str):
+    if USE_POSTGRES:
+        cur.execute("SELECT id FROM inventory_items WHERE item->>'itemCode' = %s", (item_code,))
+        row = cur.fetchone()
+        return row['id'] if row else None
+
+    cur.execute('SELECT id, item FROM inventory_items')
+    for row in cur.fetchall():
+        if (row['item'] or {}).get('itemCode') == item_code:
+            return row['id']
+    return None
+
+
+@app.route('/api/checkout', methods=['POST'])
+@session_or_api_key_required
+def simple_checkout():
+    """A one-call checkout endpoint meant to be easy to invoke from anywhere:
+    curl, a barcode-scanner script, or hardware - not just the web app.
+
+    Accepts either the internal itemId or the human-readable itemCode printed
+    on the shelf label, and authenticates with either a browser session or an
+    X-API-Key header (see INVENTORY_API_KEY / session_or_api_key_required).
+
+    Example:
+        curl -X POST https://<host>/api/checkout \\
+            -H "Content-Type: application/json" \\
+            -H "X-API-Key: <INVENTORY_API_KEY>" \\
+            -d '{"itemCode": "E001", "qty": 1, "user": "Sarah Jenkins", "team": "Engineering"}'
+    """
+    data = request.get_json(silent=True) or {}
+    item_id = data.get('itemId')
+    item_code = str(data.get('itemCode') or '').strip()
+    qty = int(data.get('qty', 1) or 1)
+    user = str(data.get('user') or session.get('user_id') or '').strip()
+    team = str(data.get('team') or '').strip()
+
+    if not user or not team:
+        return jsonify({'error': 'user and team are required.'}), 400
+    if qty <= 0:
+        return jsonify({'error': 'qty must be a positive number.'}), 400
+    if not item_id and not item_code:
+        return jsonify({'error': 'itemId or itemCode is required.'}), 400
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            if not item_id:
+                item_id = _find_item_id_by_code(cur, item_code)
+                if not item_id:
+                    return jsonify({'error': f'No inventory item with itemCode "{item_code}".'}), 404
+            item = _apply_checkout(cur, item_id, qty, user, team)
+            if item is None:
+                return jsonify({'error': 'Inventory item not found.'}), 404
+        conn.commit()
+    return jsonify({'item': item}), 200
+
+
 def _apply_checkin(cur, item_id, qty, return_location):
     cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
     row = cur.fetchone()
@@ -529,6 +611,46 @@ def checkin():
     with db() as conn:
         with conn.cursor() as cur:
             item = _apply_checkin(cur, item_id, qty, data.get('returnLocation'))
+            if item is None:
+                return jsonify({'error': 'Inventory item not found.'}), 404
+        conn.commit()
+    return jsonify({'item': item}), 200
+
+
+def _apply_receive(cur, item_id, qty):
+    """Adds freshly-received stock: increments both quantity and
+    availableQuantity, unlike Stock Check which sets availableQuantity to the
+    on-shelf count it observed.
+    """
+    cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    item = row['item']
+    now = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
+    received_qty = max(0, qty)
+    item['quantity'] = max(0, int(item.get('quantity', 0)) + received_qty)
+    item['availableQuantity'] = max(0, int(item.get('availableQuantity', 0)) + received_qty)
+    item['lastSeen'] = now[:10]
+    if item['availableQuantity'] > 0:
+        item['status'] = 'Available'
+    cur.execute(
+        'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
+        (json.dumps(item), item_id),
+    )
+    return item
+
+
+@app.route('/api/inventory/receive', methods=['POST'])
+@login_required
+def receive_stock():
+    data = request.get_json(silent=True) or {}
+    item_id, qty = data.get('itemId'), int(data.get('qty', 0))
+    if qty <= 0:
+        return jsonify({'error': 'qty must be a positive number.'}), 400
+    with db() as conn:
+        with conn.cursor() as cur:
+            item = _apply_receive(cur, item_id, qty)
             if item is None:
                 return jsonify({'error': 'Inventory item not found.'}), 404
         conn.commit()
@@ -714,6 +836,10 @@ def relay_mutation():
                     cur, payload.get('itemId'), int(payload.get('qty', 0)),
                     payload.get('returnLocation'),
                 )
+                if item is None:
+                    return jsonify({'error': 'Inventory item not found.'}), 404
+            elif action == 'RECEIVE_STOCK':
+                item = _apply_receive(cur, payload.get('itemId'), int(payload.get('qty', 0)))
                 if item is None:
                     return jsonify({'error': 'Inventory item not found.'}), 404
             elif action == 'SCAN':

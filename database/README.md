@@ -1,37 +1,55 @@
-# Multi-Store Inventory Management Database
+# CORE INVENTORY backend
 
-This directory contains the complete relational SQLite database schema, seeding scripts, transaction-safe detection ingestion manager, offline queue sync recovery handlers, and automated test suite for the Multi-Store Inventory System.
+This is the Flask API the frontend actually talks to (`src/services/storageService.ts` calls
+`/api/*`). It is deployed on Render as a single web service (see `../render.yaml` and
+`../RENDER-DEPLOYMENT.md`).
 
-## Architecture Overview
+## Storage
 
-- **Database Engine**: SQLite 3 with Foreign Key constraints (`PRAGMA foreign_keys = ON;`)
-- **Tables**:
-  1. `users`: Staff & Operator accounts for authentication & accountability.
-  2. `stores`: Store profiles with online/offline capability flags (`Store 1` to `Store 4`).
-  3. `categories`: High-level inventory categories.
-  4. `products`: Master product catalog with SKU, name, unit price, and category.
-  5. `store_inventory`: Composite primary key `(store_id, product_id)` tracking real-time stock levels.
-  6. `image_detections_log`: Immutable audit log of YOLO computer vision detections with user & team accountability.
-  7. `sync_queue`: Offline-first queue buffering detection payloads during network outages for Stores 3 & 4.
+- **Production**: PostgreSQL, used automatically whenever `DATABASE_URL` is set (Render injects
+  this from the attached Postgres instance). Tables and columns are defined in `schema.sql`.
+- **Local development**: SQLite (`visionstock_local.db`, gitignored), used automatically when
+  `DATABASE_URL` is not set, so Windows developers don't need PostgreSQL installed locally.
 
-## File Manifest
+Every table besides `users` stores its payload as a JSON blob (`JSONB` on Postgres, `TEXT` on
+SQLite) keyed by id - `inventory_items`, `scan_records`, `stock_checks`, `app_config`,
+`system_state`. `app.py`'s `db()`/`CursorAdapter` translate the small subset of Postgres syntax
+used here (`%s` placeholders, `FOR UPDATE`, `NOW()`, `::jsonb`) to SQLite automatically, so the
+same code path runs against either backend.
 
-| File | Description |
-|------|-------------|
-| `schema.sql` | Complete DDL schema definition with performance indexes |
-| `init_db.py` | Database initialization and baseline seeding script |
-| `inventory_manager.py` | Transaction-safe detection ingestion, offline buffering, sync recovery, and discrepancy auditing |
-| `test_db.py` | Automated test suite verifying bulk return, offline queue replay, and audit checks |
-| `app.py` | Flask REST API server implementing endpoints for authentication, current user, and detection ingestion |
+## Key endpoints
 
-## Running Database Scripts
+| Route | Auth | Purpose |
+|---|---|---|
+| `POST /api/register`, `/api/login`, `/api/logout`, `GET /api/me` | session | Account/session management |
+| `GET /api/state` | session | Full inventory/scan/stock-check/model snapshot |
+| `POST /api/inventory/checkout`, `/api/inventory/checkin` | session | Used by the web app's Checkout modal |
+| `POST /api/checkout` | session **or** `X-API-Key` header | Simple, script/hardware-friendly checkout by `itemId` or `itemCode` - see below |
+| `POST /api/scans`, `/api/stock-check` | session | YOLO scan intake and Stock Check reconciliation |
+| `POST /api/mutations/relay` | session | Replays one queued `{action, payload}` mutation - used by the offline ESP-NOW mesh relay and by the frontend's own pending-mutation flush |
 
-To initialize the database:
+### Automation-friendly checkout (`POST /api/checkout`)
+
+Set an `INVENTORY_API_KEY` environment variable on the server, then call it with a header instead
+of a browser session - useful for a barcode-scanner script, a kiosk, or the ESP32 relay:
+
 ```bash
-python3 database/init_db.py
+curl -X POST https://<host>/api/checkout \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <INVENTORY_API_KEY>" \
+  -d '{"itemCode": "E001", "qty": 1, "user": "Sarah Jenkins", "team": "Engineering"}'
 ```
 
-To run the automated test suite:
+`itemId` also works in place of `itemCode` if you already have the internal id. If
+`INVENTORY_API_KEY` is left unset, this route falls back to requiring a logged-in session, same as
+every other endpoint.
+
+## Running locally
+
 ```bash
-python3 database/test_db.py
+pip install -r requirements.txt
+python app.py
 ```
+
+This starts the API on `http://127.0.0.1:5000` against the local SQLite file, creating it (and its
+tables) on first request.
