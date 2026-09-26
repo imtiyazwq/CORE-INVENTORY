@@ -420,6 +420,19 @@ def seed():
     }), 200
 
 
+def _apply_inventory_item(cur, item):
+    cur.execute(
+        'INSERT INTO inventory_items (id, item) VALUES (%s, %s) '
+        'ON CONFLICT (id) DO UPDATE SET item = EXCLUDED.item, updated_at = NOW()',
+        (item['id'], json.dumps(item)),
+    )
+    cur.execute(
+        "UPDATE system_state SET state_value = 'true'::jsonb, updated_at = NOW() "
+        "WHERE state_key = 'initialized'"
+    )
+    return item
+
+
 @app.route('/api/inventory/item', methods=['POST', 'PUT'])
 @login_required
 def inventory_item():
@@ -429,17 +442,36 @@ def inventory_item():
         return jsonify({'error': 'A complete inventory item is required.'}), 400
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                'INSERT INTO inventory_items (id, item) VALUES (%s, %s) '
-                'ON CONFLICT (id) DO UPDATE SET item = EXCLUDED.item, updated_at = NOW()',
-                (item['id'], json.dumps(item)),
-            )
-            cur.execute(
-                "UPDATE system_state SET state_value = 'true'::jsonb, updated_at = NOW() "
-                "WHERE state_key = 'initialized'"
-            )
+            _apply_inventory_item(cur, item)
         conn.commit()
     return jsonify({'item': item}), 200
+
+
+def _apply_checkout(cur, item_id, qty, user, team):
+    cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    item = row['item']
+    now = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
+    requested_qty = max(0, qty)
+    available = max(0, int(item.get('availableQuantity', 0)))
+    deduction = min(available, requested_qty)
+    item['availableQuantity'] = max(0, available - deduction)
+
+    # Checkout is a movement state, not disposal. Keep the row Available
+    # while some units remain and mark it Checked Out only when all currently
+    # available units are out.
+    item['status'] = 'Checked Out' if item['availableQuantity'] == 0 else 'Available'
+    item['user'] = user
+    item['team'] = team
+    item['checkedOutAt'] = now
+    item['lastSeen'] = now[:10]
+    cur.execute(
+        'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
+        (json.dumps(item), item_id),
+    )
+    return item
 
 
 @app.route('/api/inventory/checkout', methods=['POST'])
@@ -449,31 +481,44 @@ def checkout():
     item_id, qty = data.get('itemId'), int(data.get('qty', 0))
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
-            row = cur.fetchone()
-            if not row:
+            item = _apply_checkout(cur, item_id, qty, data.get('user'), data.get('team'))
+            if item is None:
                 return jsonify({'error': 'Inventory item not found.'}), 404
-            item = row['item']
-            now = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
-            requested_qty = max(0, qty)
-            available = max(0, int(item.get('availableQuantity', 0)))
-            deduction = min(available, requested_qty)
-            item['availableQuantity'] = max(0, available - deduction)
-
-            # Checkout is a movement state, not disposal. Keep the row Available
-            # while some units remain and mark it Checked Out only when all currently
-            # available units are out.
-            item['status'] = 'Checked Out' if item['availableQuantity'] == 0 else 'Available'
-            item['user'] = data.get('user')
-            item['team'] = data.get('team')
-            item['checkedOutAt'] = now
-            item['lastSeen'] = now[:10]
-            cur.execute(
-                'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
-                (json.dumps(item), item_id),
-            )
         conn.commit()
     return jsonify({'item': item}), 200
+
+
+def _apply_checkin(cur, item_id, qty, return_location):
+    cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    item = row['item']
+    now = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
+    item['location'] = return_location or item.get('location')
+    item['lastSeen'] = now[:10]
+    requested_qty = max(0, qty)
+    total_qty = max(0, int(item.get('quantity', 0)))
+    available = max(0, int(item.get('availableQuantity', 0)))
+    outstanding_qty = max(0, total_qty - available)
+    returned_qty = min(outstanding_qty, requested_qty)
+    item['availableQuantity'] = min(total_qty, available + returned_qty)
+
+    if item['availableQuantity'] >= total_qty:
+        # Final return: clear the active custodian.
+        item['status'] = 'Available'
+        item.pop('user', None)
+        item.pop('team', None)
+        item.pop('checkedOutAt', None)
+    else:
+        # Partial return: available stock and borrowed stock may coexist.
+        # Keep borrower metadata so the UI can still offer Check In.
+        item['status'] = 'Available' if item['availableQuantity'] > 0 else 'Checked Out'
+    cur.execute(
+        'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
+        (json.dumps(item), item_id),
+    )
+    return item
 
 
 @app.route('/api/inventory/checkin', methods=['POST'])
@@ -483,37 +528,21 @@ def checkin():
     item_id, qty = data.get('itemId'), int(data.get('qty', 0))
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute('SELECT item FROM inventory_items WHERE id = %s FOR UPDATE', (item_id,))
-            row = cur.fetchone()
-            if not row:
+            item = _apply_checkin(cur, item_id, qty, data.get('returnLocation'))
+            if item is None:
                 return jsonify({'error': 'Inventory item not found.'}), 404
-            item = row['item']
-            now = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
-            item['location'] = data.get('returnLocation', item.get('location'))
-            item['lastSeen'] = now[:10]
-            requested_qty = max(0, qty)
-            total_qty = max(0, int(item.get('quantity', 0)))
-            available = max(0, int(item.get('availableQuantity', 0)))
-            outstanding_qty = max(0, total_qty - available)
-            returned_qty = min(outstanding_qty, requested_qty)
-            item['availableQuantity'] = min(total_qty, available + returned_qty)
-
-            if item['availableQuantity'] >= total_qty:
-                # Final return: clear the active custodian.
-                item['status'] = 'Available'
-                item.pop('user', None)
-                item.pop('team', None)
-                item.pop('checkedOutAt', None)
-            else:
-                # Partial return: available stock and borrowed stock may coexist.
-                # Keep borrower metadata so the UI can still offer Check In.
-                item['status'] = 'Available' if item['availableQuantity'] > 0 else 'Checked Out'
-            cur.execute(
-                'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
-                (json.dumps(item), item_id),
-            )
         conn.commit()
     return jsonify({'item': item}), 200
+
+
+def _apply_scan(cur, record):
+    record['status'] = 'Pending Review'
+    cur.execute(
+        'INSERT INTO scan_records (id, record) VALUES (%s, %s) '
+        'ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record',
+        (record['id'], json.dumps(record)),
+    )
+    return record
 
 
 @app.route('/api/scans', methods=['POST'])
@@ -523,14 +552,9 @@ def scans():
     record = data.get('scan')
     if not record or not record.get('id'):
         return jsonify({'error': 'Scan record is required.'}), 400
-    record['status'] = 'Pending Review'
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                'INSERT INTO scan_records (id, record) VALUES (%s, %s) '
-                'ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record',
-                (record['id'], json.dumps(record)),
-            )
+            _apply_scan(cur, record)
         conn.commit()
     return jsonify({'scan': record}), 201
 
@@ -570,6 +594,76 @@ def _find_latest_pending_scan(cur, location: str):
     return None
 
 
+def _apply_stock_check(cur, record, apply_inventory):
+    if apply_inventory:
+        for audit in record.get('items', []):
+            row = _find_inventory_row_for_stock_check(
+                cur,
+                audit['name'],
+                record['location'],
+            )
+            if not row:
+                # New classes are created by the approved frontend flow only;
+                # never auto-create an unknown item from a raw YOLO scan here.
+                continue
+            item = row['item']
+            # Stock Check verifies physical on-hand stock. Reconcile the
+            # available count, not the overall ledger total. If the audit
+            # finds more units than the current total, expand the total so
+            # availableQuantity never exceeds quantity.
+            detected_available = max(0, int(audit.get('detected', 0)))
+            item['availableQuantity'] = detected_available
+            if detected_available > int(item.get('quantity', 0)):
+                item['quantity'] = detected_available
+
+            item['lastSeen'] = record.get('confirmedAt', '')[:10]
+            if item['availableQuantity'] > 0:
+                item['status'] = 'Available'
+            elif item.get('assetType') == 'Consumable':
+                item['status'] = 'Disposed'
+            elif item.get('user') or item.get('checkedOutAt'):
+                item['status'] = 'Checked Out'
+            else:
+                item['status'] = 'Missing'
+            cur.execute(
+                'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
+                (json.dumps(item), row['id']),
+            )
+
+    # A stock check relayed through the offline ESP-NOW mesh may arrive as
+    # several chunks (see espRelayService.ts's chunkPayloadForRelay - the
+    # ESP32's BLE buffers can't hold a whole-location audit in one message),
+    # each carrying a subset of `items` under the same `id`. Merge by item
+    # name into whatever's already stored instead of overwriting, so later
+    # chunks don't erase earlier ones - order-independent and idempotent,
+    # since ESP-NOW flooding gives no delivery-order guarantee anyway.
+    cur.execute('SELECT record FROM stock_checks WHERE id = %s', (record['id'],))
+    existing = cur.fetchone()
+    if existing and existing.get('record'):
+        merged_items = {item['name']: item for item in existing['record'].get('items', [])}
+        for item in record.get('items', []):
+            merged_items[item['name']] = item
+        stored_record = {**existing['record'], **record, 'items': list(merged_items.values())}
+    else:
+        stored_record = record
+
+    cur.execute(
+        'INSERT INTO stock_checks (id, record) VALUES (%s, %s) '
+        'ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record',
+        (record['id'], json.dumps(stored_record)),
+    )
+
+    pending = _find_latest_pending_scan(cur, record['location'])
+    if pending:
+        scan = pending['record']
+        scan['status'] = 'Confirmed'
+        cur.execute(
+            'UPDATE scan_records SET record = %s WHERE id = %s',
+            (json.dumps(scan), pending['id']),
+        )
+    return record
+
+
 @app.route('/api/stock-check', methods=['POST'])
 @login_required
 def stock_check():
@@ -581,57 +675,62 @@ def stock_check():
 
     with db() as conn:
         with conn.cursor() as cur:
-            if apply_inventory:
-                for audit in record.get('items', []):
-                    row = _find_inventory_row_for_stock_check(
-                        cur,
-                        audit['name'],
-                        record['location'],
-                    )
-                    if not row:
-                        # New classes are created by the approved frontend flow only;
-                        # never auto-create an unknown item from a raw YOLO scan here.
-                        continue
-                    item = row['item']
-                    # Stock Check verifies physical on-hand stock. Reconcile the
-                    # available count, not the overall ledger total. If the audit
-                    # finds more units than the current total, expand the total so
-                    # availableQuantity never exceeds quantity.
-                    detected_available = max(0, int(audit.get('detected', 0)))
-                    item['availableQuantity'] = detected_available
-                    if detected_available > int(item.get('quantity', 0)):
-                        item['quantity'] = detected_available
-
-                    item['lastSeen'] = record.get('confirmedAt', '')[:10]
-                    if item['availableQuantity'] > 0:
-                        item['status'] = 'Available'
-                    elif item.get('assetType') == 'Consumable':
-                        item['status'] = 'Disposed'
-                    elif item.get('user') or item.get('checkedOutAt'):
-                        item['status'] = 'Checked Out'
-                    else:
-                        item['status'] = 'Missing'
-                    cur.execute(
-                        'UPDATE inventory_items SET item = %s, updated_at = NOW() WHERE id = %s',
-                        (json.dumps(item), row['id']),
-                    )
-
-            cur.execute(
-                'INSERT INTO stock_checks (id, record) VALUES (%s, %s) '
-                'ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record',
-                (record['id'], json.dumps(record)),
-            )
-
-            pending = _find_latest_pending_scan(cur, record['location'])
-            if pending:
-                scan = pending['record']
-                scan['status'] = 'Confirmed'
-                cur.execute(
-                    'UPDATE scan_records SET record = %s WHERE id = %s',
-                    (json.dumps(scan), pending['id']),
-                )
+            _apply_stock_check(cur, record, apply_inventory)
         conn.commit()
     return jsonify({'stockCheck': record}), 201
+
+
+@app.route('/api/mutations/relay', methods=['POST'])
+@login_required
+def relay_mutation():
+    """Apply a mutation forwarded through the ESP-NOW mesh relay.
+
+    Used when another node's laptop was offline, flooded its pending
+    mutation to the mesh, and THIS laptop (which does have internet) picked
+    it up and is applying it on the origin's behalf. `action`/`payload`
+    mirror storageService's OfflineMutation shape exactly, so this endpoint
+    stays a thin dispatch over the same logic the direct per-action routes
+    use above.
+    """
+    data = request.get_json(silent=True) or {}
+    action = data.get('action')
+    payload = data.get('payload') or {}
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            if action == 'UPDATE_ITEM':
+                if not payload.get('id'):
+                    return jsonify({'error': 'A complete inventory item is required.'}), 400
+                _apply_inventory_item(cur, payload)
+            elif action == 'CHECKOUT':
+                item = _apply_checkout(
+                    cur, payload.get('itemId'), int(payload.get('qty', 0)),
+                    payload.get('user'), payload.get('team'),
+                )
+                if item is None:
+                    return jsonify({'error': 'Inventory item not found.'}), 404
+            elif action == 'CHECKIN':
+                item = _apply_checkin(
+                    cur, payload.get('itemId'), int(payload.get('qty', 0)),
+                    payload.get('returnLocation'),
+                )
+                if item is None:
+                    return jsonify({'error': 'Inventory item not found.'}), 404
+            elif action == 'SCAN':
+                if not payload.get('id'):
+                    return jsonify({'error': 'Scan record is required.'}), 400
+                _apply_scan(cur, payload)
+            elif action == 'STOCK_CHECK':
+                if not payload.get('id'):
+                    return jsonify({'error': 'Stock check record is required.'}), 400
+                # Every caller of addStockCheck() in the frontend passes
+                # applyToInventory=True (see src/App.tsx handleReconcileStock) -
+                # a relayed stock check always reconciles inventory too.
+                _apply_stock_check(cur, payload, True)
+            else:
+                return jsonify({'error': f'Unsupported relay action: {action}'}), 400
+        conn.commit()
+    return jsonify({'message': 'Mutation relayed', 'action': action}), 200
 
 
 @app.route('/api/model-config', methods=['PUT'])

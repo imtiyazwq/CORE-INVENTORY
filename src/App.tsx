@@ -122,7 +122,6 @@ export const App: React.FC = () => {
             expected: expectedAvailable,
             detected: update.newQuantity,
             difference,
-            variance: difference,
             status: difference === 0 ? 'Matched' as const : difference < 0 ? 'Short' as const : 'Extra' as const,
           };
         }
@@ -134,7 +133,6 @@ export const App: React.FC = () => {
             expected: 0,
             detected: update.newQuantity,
             difference: update.newQuantity,
-            variance: update.newQuantity,
             status: 'Extra' as const,
           };
         }

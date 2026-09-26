@@ -15,10 +15,12 @@ import {
   Layers,
   Sparkles,
   ChevronDown,
+  Usb,
 } from 'lucide-react';
 import { ModelConfig, YOLOClassLabel, EngineMode } from '../types';
 import { PREDEFINED_YOLO_CATEGORIES, modelService, DEFAULT_YOLO_LABELS } from '../services/modelService';
 import { storageService } from '../services/storageService';
+import { espRelayService, EspRelayState } from '../services/espRelayService';
 
 interface SettingsPageProps {
   modelConfig?: ModelConfig;
@@ -80,6 +82,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [importStatus, setImportStatus] = useState<{ success: boolean; msg: string } | null>(null);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [relayState, setRelayState] = useState<EspRelayState>(() => espRelayService.getState());
+
+  useEffect(() => {
+    const unsubscribe = espRelayService.subscribe(setRelayState);
+    return unsubscribe;
+  }, []);
 
   // Save model config
   const handleSaveModelConfig = () => {
@@ -627,6 +635,79 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 )}
               </button>
             </div>
+          </div>
+
+          {/* Card 3: Offline Mesh Relay (ESP32 / ESP-NOW) */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Usb className={`w-4 h-4 ${relayState.connected ? 'text-emerald-600' : 'text-slate-400'}`} />
+                <h3 className="text-sm font-bold text-slate-900">Offline Mesh Relay</h3>
+              </div>
+            </div>
+
+            {!relayState.supported ? (
+              <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <span>Web Serial isn't supported in this browser. Use Chrome or Edge to connect an ESP32.</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-600 font-medium">USB device:</span>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                      relayState.connected
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    {relayState.connected ? relayState.deviceName || 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-600">Awaiting mesh sync:</span>
+                    <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                      {relayState.outboundPending}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-slate-600">Relayed for other nodes:</span>
+                    <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                      {relayState.relayedForOthersCount}
+                    </span>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                  When this laptop is offline, mutations are sent over USB to its paired ESP32 and flooded across
+                  the ESP-NOW mesh until a node whose laptop has internet applies them. The ESP32 must stay plugged
+                  in via USB - this link no longer uses Bluetooth.
+                </p>
+
+                {relayState.lastError && (
+                  <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{relayState.lastError}</span>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void (relayState.connected ? espRelayService.disconnect() : espRelayService.connect())}
+                  className={`w-full py-2 px-3 text-xs font-bold rounded-lg shadow-2xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
+                    relayState.connected
+                      ? 'text-rose-700 bg-rose-50 hover:bg-rose-100/80 border border-rose-200'
+                      : 'text-white bg-[#005f60] hover:bg-[#004d4e]'
+                  }`}
+                >
+                  <Usb className="w-3.5 h-3.5" />
+                  {relayState.connected ? 'Disconnect ESP32' : 'Connect ESP32'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

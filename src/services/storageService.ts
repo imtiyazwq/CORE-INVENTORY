@@ -8,6 +8,8 @@ import {
 } from '../types';
 import { REAL_INVENTORY_DATASET, INVENTORY_DATASET_VERSION } from '../data/realInventoryData';
 import { DEFAULT_MODEL_CONFIG, DEFAULT_YOLO_LABELS } from './modelService';
+import { apiUrl } from './apiBase';
+import { espRelayService } from './espRelayService';
 
 export interface StorageState {
   items: InventoryItem[];
@@ -19,10 +21,6 @@ export interface StorageState {
   simulatedOffline: boolean;
   lastSyncedAt: string;
 }
-
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
-const apiUrl = (path: string) => `${API_BASE}${path}`;
-
 
 const FULLY_UNAVAILABLE_STATUSES = new Set([
   'Checked Out',
@@ -70,6 +68,9 @@ class StorageService {
   constructor() {
     this.loadLocalCache();
     this.setupNetworkListeners();
+    espRelayService.onSyncedAck((localId, ok) => {
+      if (ok) this.markMutationSynced(localId);
+    });
   }
 
   public getState(): StorageState {
@@ -176,7 +177,14 @@ class StorageService {
   }
 
   private async sendMutation(path: string, method: string, payload: any): Promise<boolean> {
-    if (!this.isOnline || this.simulatedOffline) return false;
+    if (!this.isOnline || this.simulatedOffline) {
+      // No direct connection to the backend - hand the mutation that was
+      // just queued off to the paired ESP32 so it can be flooded across the
+      // offline mesh to a node whose laptop does have internet.
+      const latest = this.pendingMutations[this.pendingMutations.length - 1];
+      if (latest) espRelayService.relayMutation(latest);
+      return false;
+    }
     try {
       const response = await this.request(path, {
         method,
@@ -391,6 +399,15 @@ class StorageService {
     this.queueMutation('STOCK_CHECK', newRecord);
     this.persistLocalCache();
     void this.sendMutation('/api/stock-check', 'POST', { stockCheck: newRecord, applyToInventory });
+  }
+
+  /** Called when the ESP32 mesh confirms one specific queued mutation reached the backend. */
+  public markMutationSynced(localId: string): void {
+    const before = this.pendingMutations.length;
+    this.pendingMutations = this.pendingMutations.filter((mutation) => mutation.id !== localId);
+    if (this.pendingMutations.length === before) return;
+    this.lastSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.persistLocalCache();
   }
 
   public syncQueue(): { syncedCount: number; timestamp: string } {
