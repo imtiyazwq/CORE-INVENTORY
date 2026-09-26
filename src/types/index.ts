@@ -127,7 +127,7 @@ export interface ScanRecord {
   location: ValidLocation;
   user: string;
   team?: string;
-  itemsDetected: Array<{ className: string; quantity: number; confidence: number }>;
+  itemsDetected: Array<{ className: string; category?: string; quantity: number; confidence: number }>;
   totalQuantity: number;
   status: 'Confirmed' | 'Discrepancy Flagged' | 'Pending Review';
   timestamp: string;
@@ -191,7 +191,7 @@ export interface ModelConfig {
 
 export interface OfflineMutation {
   id: string;
-  action: 'SCAN' | 'CHECKOUT' | 'CHECKIN' | 'STOCK_CHECK' | 'UPDATE_ITEM';
+  action: 'SCAN' | 'CHECKOUT' | 'CHECKIN' | 'STOCK_CHECK' | 'UPDATE_ITEM' | 'RECEIVE_STOCK';
   timestamp: string;
   payload: any;
 }

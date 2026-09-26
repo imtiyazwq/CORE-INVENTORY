@@ -62,16 +62,19 @@ export const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // A scan is a proposal. It is saved as Pending Review and MUST NOT change Inventory.
-  const handleScanConfirmed = (scanData: {
+  type ScanConfirmationPayload = {
     location: ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number }>;
+    confirmedItems: Array<{ className: string; category: string; quantity: number; confidence: number }>;
     operator: string;
     team?: string;
     notes: string;
     type: 'webcam' | 'upload';
     previewUrl?: string;
-  }) => {
+  };
+
+  // A scan sent to Stock Check is a proposal: it is saved as Pending Review and
+  // MUST NOT change Inventory until a Stock Check approves it (see handleReconcileStock).
+  const handleScanConfirmed = (scanData: ScanConfirmationPayload) => {
     const totalQuantity = scanData.confirmedItems.reduce((sum, item) => sum + item.quantity, 0);
 
     storageService.addScanRecord({
@@ -94,6 +97,39 @@ export const App: React.FC = () => {
     // DO NOT call addItem() or updateItem() here.
     // Inventory changes only after Stock Check reconciliation.
     setActivePage('stockcheck');
+  };
+
+  // A "receive stock" scan is different from the Stock Check path above: it ADDS
+  // the detected quantities directly on top of whatever is already at that
+  // location (3 on hand + 2 detected = 5), for restocking incoming units rather
+  // than auditing/reconciling what's already on the shelf. Applied immediately,
+  // so the scan record is logged as already Confirmed instead of Pending Review.
+  const handleReceiveScannedStock = (scanData: ScanConfirmationPayload) => {
+    const totalQuantity = scanData.confirmedItems.reduce((sum, item) => sum + item.quantity, 0);
+    const team = scanData.team || currentUser?.teamName || 'Inventory Team';
+
+    storageService.addScanRecord({
+      type: scanData.type,
+      location: scanData.location,
+      user: scanData.operator,
+      team,
+      itemsDetected: scanData.confirmedItems,
+      totalQuantity,
+      status: 'Confirmed',
+      notes: scanData.notes || 'Stock received via YOLO scan and added directly to inventory.',
+      previewUrl: scanData.previewUrl,
+    });
+
+    storageService.receiveStock(
+      scanData.location,
+      scanData.confirmedItems.map((item) => ({
+        name: item.className,
+        category: item.category,
+        quantity: item.quantity,
+      })),
+      scanData.operator,
+      team
+    );
   };
 
   const handleCheckoutItem = (itemId: string, user: string, team: string, qty: number) => {
@@ -236,6 +272,7 @@ export const App: React.FC = () => {
           {activePage === 'scan' && (
             <ScanInventoryPage
               onScanConfirmed={handleScanConfirmed}
+              onReceiveStock={handleReceiveScannedStock}
               defaultLocation={VALID_LOCATIONS[0]}
               initialMode={scanInitialMode}
               currentUser={currentUser}

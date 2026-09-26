@@ -31,16 +31,21 @@ import { modelService, runDetection, DEFAULT_YOLO_LABELS } from '../services/mod
 import { mapYOLODetection, mergeMappedYOLOItems } from '../services/yoloInventoryMapper';
 import { BoundingBoxOverlay } from '../components/BoundingBoxOverlay';
 
+interface ScanConfirmationPayload {
+  location: ValidLocation;
+  confirmedItems: Array<{ className: string; category: string; quantity: number; confidence: number }>;
+  operator: string;
+  team?: string;
+  notes: string;
+  type: 'webcam' | 'upload';
+  previewUrl?: string;
+}
+
 interface ScanInventoryPageProps {
-  onScanConfirmed: (scanData: {
-    location: ValidLocation;
-    confirmedItems: Array<{ className: string; quantity: number; confidence: number }>;
-    operator: string;
-    team?: string;
-    notes: string;
-    type: 'webcam' | 'upload';
-    previewUrl?: string;
-  }) => void;
+  /** Saves the scan as Pending Review; inventory only changes after Stock Check approval. */
+  onScanConfirmed: (scanData: ScanConfirmationPayload) => void;
+  /** Adds the detected quantities straight to inventory (existing stock + new count), no Stock Check gate. */
+  onReceiveStock: (scanData: ScanConfirmationPayload) => void;
   defaultLocation?: ValidLocation;
   initialMode?: 'webcam' | 'upload';
   currentUser?: UserAccount | null;
@@ -66,6 +71,7 @@ const getRackShelfOptionsForLocation = (location: ValidLocation): string[] =>
 
 export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
   onScanConfirmed,
+  onReceiveStock,
   defaultLocation = VALID_LOCATIONS[0],
   initialMode = 'webcam',
   currentUser,
@@ -430,17 +436,21 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
   };
 
   const handleAddManualItem = () => {
-    const existing = confirmedItems.find((it) => it.className === manualSelectClass);
+    const labelMeta = DEFAULT_YOLO_LABELS.find(
+      (l) => l.label === manualSelectClass || l.label.replace(/_/g, ' ') === manualSelectClass.replace(/_/g, ' ')
+    );
+    // Use the inventory display name ("NodeMCU"), not the raw YOLO class label
+    // ("nodemcu_esp32") - Stock Check and receiveStock() match against
+    // InventoryItem.name, which is always the display name.
+    const inventoryClassName = labelMeta?.displayName || manualSelectClass;
+    const existing = confirmedItems.find((it) => it.className === inventoryClassName);
     if (existing) {
-      handleQuantityChange(manualSelectClass, 1);
+      handleQuantityChange(inventoryClassName, 1);
     } else {
-      const labelMeta = DEFAULT_YOLO_LABELS.find(
-        (l) => l.label === manualSelectClass || l.label.replace(/_/g, ' ') === manualSelectClass.replace(/_/g, ' ')
-      );
       setConfirmedItems((prev) => [
         ...prev,
         {
-          className: manualSelectClass,
+          className: inventoryClassName,
           category: labelMeta?.category || 'General Equipment',
           quantity: 1,
           confidence: 1.0,
@@ -453,25 +463,42 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
 
   const totalConfirmedUnits = confirmedItems.reduce((acc, curr) => acc + curr.quantity, 0);
 
+  const buildScanPayload = () => ({
+    location: selectedLocation,
+    confirmedItems: confirmedItems.map((it) => ({
+      className: it.className,
+      category: it.category,
+      quantity: it.quantity,
+      confidence: it.confidence,
+    })),
+    operator: operator.trim() || currentUser?.userName || 'John Smith',
+    team: currentUser?.teamName,
+    notes: notes.trim() || `${activeTab === 'webcam' ? 'Live Webcam' : 'Image Upload'} scan at ${rackShelf}`,
+    type: activeTab,
+    previewUrl: uploadedResult?.dataUrl,
+  });
+
   const handleFinalConfirm = () => {
     if (confirmedItems.length === 0 || totalConfirmedUnits === 0) return;
 
-    onScanConfirmed({
-      location: selectedLocation,
-      confirmedItems: confirmedItems.map((it) => ({
-        className: it.className,
-        quantity: it.quantity,
-        confidence: it.confidence,
-      })),
-      operator: operator.trim() || currentUser?.userName || 'John Smith',
-      team: currentUser?.teamName,
-      notes: notes.trim() || `${activeTab === 'webcam' ? 'Live Webcam' : 'Image Upload'} scan at ${rackShelf}`,
-      type: activeTab,
-      previewUrl: uploadedResult?.dataUrl,
-    });
+    onScanConfirmed(buildScanPayload());
 
     setConfirmSuccessMessage(
       `Scan saved for Stock Check: ${totalConfirmedUnits} units across ${confirmedItems.length} items at ${selectedLocation} (${rackShelf}).`
+    );
+
+    setTimeout(() => {
+      setConfirmSuccessMessage(null);
+    }, 6000);
+  };
+
+  const handleReceiveStock = () => {
+    if (confirmedItems.length === 0 || totalConfirmedUnits === 0) return;
+
+    onReceiveStock(buildScanPayload());
+
+    setConfirmSuccessMessage(
+      `Added ${totalConfirmedUnits} units across ${confirmedItems.length} items directly to inventory at ${selectedLocation} (${rackShelf}).`
     );
 
     setTimeout(() => {
@@ -1057,13 +1084,14 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
                   </span>
                   <div className="flex items-center gap-2">
                     <select
+                      id="manual-add-class-select"
                       value={manualSelectClass}
                       onChange={(e) => setManualSelectClass(e.target.value)}
                       className="flex-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-800 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-[#005f60]"
                     >
                       {(modelConfig.labels || DEFAULT_YOLO_LABELS).map((lbl) => (
                         <option key={lbl.id} value={lbl.label}>
-                          {lbl.label} ({lbl.category})
+                          {lbl.displayName || lbl.label} ({lbl.category})
                         </option>
                       ))}
                     </select>
@@ -1110,13 +1138,26 @@ export const ScanInventoryPage: React.FC<ScanInventoryPageProps> = ({
 
                   <button
                     type="button"
+                    id="receive-stock-btn"
+                    onClick={handleReceiveStock}
+                    disabled={totalConfirmedUnits === 0}
+                    className="w-full py-2.5 px-4 rounded-lg bg-[#005f60] hover:bg-[#004d4e] disabled:opacity-50 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    title="Adds these detected units directly on top of existing stock at this location - e.g. 3 on hand + 2 detected = 5."
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add to Inventory (+{totalConfirmedUnits} Units)</span>
+                  </button>
+
+                  <button
+                    type="button"
                     id="confirm-inventory-update-btn"
                     onClick={handleFinalConfirm}
                     disabled={totalConfirmedUnits === 0}
-                    className="w-full py-2.5 px-4 rounded-lg bg-[#005f60] hover:bg-[#004d4e] disabled:opacity-50 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    className="w-full py-2 px-4 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    title="Sends this scan to Stock Check for reconciliation instead - inventory only changes once a Stock Check approves it."
                   >
                     <Check className="w-4 h-4" />
-                    <span>Confirm & Update Inventory ({totalConfirmedUnits} Units)</span>
+                    <span>Send to Stock Check ({totalConfirmedUnits} Units)</span>
                   </button>
                 </div>
               )}

@@ -47,6 +47,16 @@ FLASK_SECRET_KEY=<long-random-secret>
 SESSION_COOKIE_SECURE=true
 ```
 
+Optionally, to enable the automation-friendly `POST /api/checkout` endpoint (for a barcode-scanner
+script, kiosk, or the ESP32 relay to call without a browser session), also set:
+
+```text
+INVENTORY_API_KEY=<another-long-random-secret>
+```
+
+See `database/README.md` for how to call it. Leaving this unset just means that one endpoint falls
+back to requiring a logged-in session like the rest of the API.
+
 The backend creates its tables automatically on the first API request.
 
 ## First deployment

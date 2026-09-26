@@ -156,13 +156,15 @@ class StorageService {
     this.notify();
   }
 
-  private queueMutation(action: OfflineMutation['action'], payload: any): void {
-    this.pendingMutations.push({
+  private queueMutation(action: OfflineMutation['action'], payload: any): OfflineMutation {
+    const mutation: OfflineMutation = {
       id: `mut-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       action,
       timestamp: new Date().toISOString(),
       payload,
-    });
+    };
+    this.pendingMutations.push(mutation);
+    return mutation;
   }
 
   private async request(path: string, init?: RequestInit): Promise<Response> {
@@ -176,14 +178,26 @@ class StorageService {
     });
   }
 
-  private async sendMutation(path: string, method: string, payload: any): Promise<boolean> {
+  /**
+   * Sends one specific queued mutation and, on success, removes only that
+   * mutation from the queue (by id). Removing the whole queue here was the
+   * root cause of dropped checkouts: if a second action got queued while the
+   * first was still in flight, the first's success wiped the second one
+   * before it was ever sent.
+   */
+  private async sendMutation(
+    path: string,
+    method: string,
+    payload: any,
+    mutationId: string
+  ): Promise<Record<string, any> | null> {
     if (!this.isOnline || this.simulatedOffline) {
       // No direct connection to the backend - hand the mutation that was
       // just queued off to the paired ESP32 so it can be flooded across the
       // offline mesh to a node whose laptop does have internet.
-      const latest = this.pendingMutations[this.pendingMutations.length - 1];
-      if (latest) espRelayService.relayMutation(latest);
-      return false;
+      const mutation = this.pendingMutations.find((m) => m.id === mutationId);
+      if (mutation) espRelayService.relayMutation(mutation);
+      return null;
     }
     try {
       const response = await this.request(path, {
@@ -191,26 +205,71 @@ class StorageService {
         body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error(await response.text());
+      const data = await response.json().catch(() => null);
       this.lastSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      this.pendingMutations = [];
+      this.pendingMutations = this.pendingMutations.filter((m) => m.id !== mutationId);
       this.persistLocalCache();
-      return true;
+      return data;
     } catch (error) {
       console.error(`[StorageService] ${method} ${path} failed:`, error);
-      return false;
+      return null;
+    }
+  }
+
+  /** Merges the server's authoritative copy of one item back into local state. */
+  private applyServerItem(serverItem: InventoryItem): void {
+    const [normalized] = normalizeInventoryList([serverItem]);
+    const index = this.items.findIndex((current) => current.id === normalized.id);
+    if (index === -1) this.items.push(normalized);
+    else this.items[index] = normalized;
+    this.persistLocalCache();
+  }
+
+  /**
+   * Actually replays every still-queued mutation to the backend (via the same
+   * relay endpoint the ESP32 mesh uses) instead of leaving them to be
+   * silently discarded on the next cloud refresh. Stops at the first failure
+   * so mutations are never applied out of order.
+   */
+  private async flushPendingMutations(): Promise<void> {
+    if (!this.isOnline || this.simulatedOffline) return;
+    for (const mutation of [...this.pendingMutations]) {
+      try {
+        const response = await this.request('/api/mutations/relay', {
+          method: 'POST',
+          body: JSON.stringify({ action: mutation.action, payload: mutation.payload }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        this.pendingMutations = this.pendingMutations.filter((m) => m.id !== mutation.id);
+      } catch (error) {
+        console.error('[StorageService] Failed to flush queued mutation:', mutation.action, error);
+        break;
+      }
     }
   }
 
   public async refreshFromCloud(): Promise<boolean> {
     if (!this.isOnline || this.simulatedOffline) return false;
     try {
+      // Flush anything still queued first. Otherwise the periodic poll can
+      // land between an optimistic local checkout and its POST landing on
+      // the server, and overwrite the fresh local state with the stale
+      // pre-checkout snapshot the GET below is about to fetch.
+      await this.flushPendingMutations();
+
       const response = await this.request('/api/state', { method: 'GET' });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
 
-      if (Array.isArray(data.items)) this.items = normalizeInventoryList(data.items);
-      if (Array.isArray(data.scanHistory)) this.scanHistory = data.scanHistory;
-      if (Array.isArray(data.stockChecks)) this.stockChecks = data.stockChecks;
+      // If a mutation is still unsent (e.g. the flush above failed because
+      // we're offline), the pulled snapshot predates it - applying it would
+      // silently revert the pending local change, so skip until it clears.
+      const hasUnsynced = this.pendingMutations.length > 0;
+      if (!hasUnsynced) {
+        if (Array.isArray(data.items)) this.items = normalizeInventoryList(data.items);
+        if (Array.isArray(data.scanHistory)) this.scanHistory = data.scanHistory;
+        if (Array.isArray(data.stockChecks)) this.stockChecks = data.stockChecks;
+      }
       if (data.modelConfig) {
         this.modelConfig = {
           ...DEFAULT_MODEL_CONFIG,
@@ -224,7 +283,7 @@ class StorageService {
       // A version mismatch happens only when we intentionally ship a new factory dataset.
       // The force reseed runs once per dataset version, preventing stale 0/0 or shifted rows
       // from surviving in SQLite/PostgreSQL after a deployment.
-      if (data.initialized === false || data.datasetVersion !== INVENTORY_DATASET_VERSION) {
+      if (!hasUnsynced && (data.initialized === false || data.datasetVersion !== INVENTORY_DATASET_VERSION)) {
         await this.seedExactDataset(data.initialized !== false);
         this.items = normalizeInventoryList([...REAL_INVENTORY_DATASET]);
         this.scanHistory = [];
@@ -232,7 +291,6 @@ class StorageService {
       }
 
       this.lastSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      this.pendingMutations = [];
       this.persistLocalCache();
       return true;
     } catch (error) {
@@ -268,18 +326,22 @@ class StorageService {
 
   public addItem(item: InventoryItem): void {
     this.items.push(item);
-    this.queueMutation('UPDATE_ITEM', item);
+    const mutation = this.queueMutation('UPDATE_ITEM', item);
     this.persistLocalCache();
-    void this.sendMutation('/api/inventory/item', 'POST', { item });
+    void this.sendMutation('/api/inventory/item', 'POST', { item }, mutation.id).then((data) => {
+      if (data?.item) this.applyServerItem(data.item);
+    });
   }
 
   public updateItem(item: InventoryItem): void {
     const index = this.items.findIndex((current) => current.id === item.id);
     if (index === -1) return;
     this.items[index] = { ...item };
-    this.queueMutation('UPDATE_ITEM', item);
+    const mutation = this.queueMutation('UPDATE_ITEM', item);
     this.persistLocalCache();
-    void this.sendMutation('/api/inventory/item', 'PUT', { item });
+    void this.sendMutation('/api/inventory/item', 'PUT', { item }, mutation.id).then((data) => {
+      if (data?.item) this.applyServerItem(data.item);
+    });
   }
 
   public checkoutItem(itemId: string, user: string, team: string, qty: number): void {
@@ -303,9 +365,16 @@ class StorageService {
     item.checkedOutAt = now;
     item.lastSeen = now.slice(0, 10);
 
-    this.queueMutation('CHECKOUT', { itemId, user, team, qty: deduction });
+    const mutation = this.queueMutation('CHECKOUT', { itemId, user, team, qty: deduction });
     this.persistLocalCache();
-    void this.sendMutation('/api/inventory/checkout', 'POST', { itemId, user, team, qty: deduction });
+    void this.sendMutation(
+      '/api/inventory/checkout',
+      'POST',
+      { itemId, user, team, qty: deduction },
+      mutation.id
+    ).then((data) => {
+      if (data?.item) this.applyServerItem(data.item);
+    });
   }
 
   public checkinItem(itemId: string, returnLocation: ValidLocation, qty: number): void {
@@ -336,9 +405,80 @@ class StorageService {
       item.status = item.availableQuantity > 0 ? 'Available' : 'Checked Out';
     }
 
-    this.queueMutation('CHECKIN', { itemId, returnLocation, qty: returnedQty });
+    const mutation = this.queueMutation('CHECKIN', { itemId, returnLocation, qty: returnedQty });
     this.persistLocalCache();
-    void this.sendMutation('/api/inventory/checkin', 'POST', { itemId, returnLocation, qty: returnedQty });
+    void this.sendMutation(
+      '/api/inventory/checkin',
+      'POST',
+      { itemId, returnLocation, qty: returnedQty },
+      mutation.id
+    ).then((data) => {
+      if (data?.item) this.applyServerItem(data.item);
+    });
+  }
+
+  /**
+   * Adds freshly-received stock straight to inventory - e.g. scanning 2 more
+   * NodeMCUs at a location that already has 3 makes it 5, not a Stock Check
+   * discrepancy to reconcile. Unlike Stock Check (which SETS availableQuantity
+   * to the detected on-shelf count), this ADDS to both quantity and
+   * availableQuantity, since it represents new units coming in rather than a
+   * recount of what's already there. An item name with no existing match at
+   * that location is registered as a brand-new inventory row.
+   */
+  public receiveStock(
+    location: ValidLocation,
+    detectedItems: Array<{ name: string; category: string; quantity: number }>,
+    user: string,
+    team?: string
+  ): void {
+    const now = new Date();
+
+    detectedItems.forEach((detected) => {
+      const qty = Math.max(0, Math.floor(Number(detected.quantity) || 0));
+      if (qty <= 0) return;
+
+      const existing = this.items.find(
+        (candidate) =>
+          candidate.location === location &&
+          candidate.name.trim().toLowerCase() === detected.name.trim().toLowerCase()
+      );
+
+      if (existing) {
+        existing.quantity += qty;
+        existing.availableQuantity += qty;
+        existing.lastSeen = now.toISOString().slice(0, 10);
+        if (existing.availableQuantity > 0) existing.status = 'Available';
+
+        const mutation = this.queueMutation('RECEIVE_STOCK', { itemId: existing.id, qty });
+        this.persistLocalCache();
+        void this.sendMutation(
+          '/api/inventory/receive',
+          'POST',
+          { itemId: existing.id, qty },
+          mutation.id
+        ).then((data) => {
+          if (data?.item) this.applyServerItem(data.item);
+        });
+      } else {
+        const newItem: InventoryItem = {
+          id: `ITEM-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+          itemCode: `YOLO-${detected.name.replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase() || 'NEW'}-${Math.floor(100 + Math.random() * 900)}`,
+          name: detected.name,
+          category: detected.category,
+          assetType: 'Non-Consumable',
+          quantity: qty,
+          availableQuantity: qty,
+          location,
+          rackShelf: 'Detected Shelf A',
+          status: 'Available',
+          lastSeen: now.toISOString().slice(0, 10),
+          team,
+          remarks: `Registered via scan-based stock receipt by ${user}`,
+        };
+        this.addItem(newItem);
+      }
+    });
   }
 
   public addScanRecord(scan: Omit<ScanRecord, 'id' | 'timestamp'>): void {
@@ -350,9 +490,9 @@ class StorageService {
     };
 
     this.scanHistory.unshift(record);
-    this.queueMutation('SCAN', record);
+    const mutation = this.queueMutation('SCAN', record);
     this.persistLocalCache();
-    void this.sendMutation('/api/scans', 'POST', { scan: record });
+    void this.sendMutation('/api/scans', 'POST', { scan: record }, mutation.id);
   }
 
   public addStockCheck(record: Omit<StockCheckRecord, 'id' | 'timestamp'>, applyToInventory = true): void {
@@ -396,9 +536,14 @@ class StorageService {
       });
     }
 
-    this.queueMutation('STOCK_CHECK', newRecord);
+    const mutation = this.queueMutation('STOCK_CHECK', newRecord);
     this.persistLocalCache();
-    void this.sendMutation('/api/stock-check', 'POST', { stockCheck: newRecord, applyToInventory });
+    void this.sendMutation(
+      '/api/stock-check',
+      'POST',
+      { stockCheck: newRecord, applyToInventory },
+      mutation.id
+    );
   }
 
   /** Called when the ESP32 mesh confirms one specific queued mutation reached the backend. */
@@ -429,7 +574,7 @@ class StorageService {
   public updateModelConfig(config: Partial<ModelConfig>): void {
     this.modelConfig = { ...this.modelConfig, ...config };
     this.persistLocalCache();
-    void this.sendMutation('/api/model-config', 'PUT', { modelConfig: this.modelConfig });
+    void this.sendMutation('/api/model-config', 'PUT', { modelConfig: this.modelConfig }, '');
   }
 
   public exportJSON(): string {
@@ -459,7 +604,7 @@ class StorageService {
         scanHistory: this.scanHistory,
         stockChecks: this.stockChecks,
         modelConfig: this.modelConfig,
-      });
+      }, '');
       return { success: true, itemCount: this.items.length };
     } catch (error: any) {
       return { success: false, itemCount: 0, message: error?.message || 'Malformed JSON string.' };
@@ -473,7 +618,7 @@ class StorageService {
     this.pendingMutations = [];
     this.lastSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     this.persistLocalCache();
-    void this.sendMutation('/api/state/clear', 'POST', {});
+    void this.sendMutation('/api/state/clear', 'POST', {}, '');
   }
 
   public resetToFactoryDataset(): void {
@@ -486,7 +631,7 @@ class StorageService {
       items: REAL_INVENTORY_DATASET,
       force: true,
       datasetVersion: INVENTORY_DATASET_VERSION,
-    });
+    }, '');
   }
 
   public loadRealDataset(): void {
