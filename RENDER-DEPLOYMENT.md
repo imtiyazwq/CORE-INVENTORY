@@ -14,31 +14,45 @@
 
 ## Render setup
 
-Use the included `render.yaml`, or create a Render Web Service manually.
+Render's **Blueprint** flow (`New +` → `Blueprint`, using `render.yaml`) requires a payment card on
+file just to use it, regardless of what services the blueprint declares - even a single free web
+service with no database attached. If none of your cards are accepted there, skip Blueprint
+entirely and create the service by hand instead; the plain `New +` → `Web Service` flow does not
+have that requirement.
 
-### Web Service
+### Web Service (manual dashboard setup)
 
-Build command:
+1. Render dashboard → `New +` → `Web Service` → connect the `CORE-INVENTORY` repo, branch `main`.
+2. **Language/Runtime:** select `Python 3` (Render otherwise auto-detects Node from `package.json`
+   and defaults to `bun install` / `yarn start`, which fails - this repo is a Python/Flask backend
+   that happens to also build a Vite frontend as part of its build step).
+3. **Build Command:**
 
-```text
-npm install && npm run build && pip install -r database/requirements.txt
-```
+   ```text
+   npm install && npm run build && pip install -r database/requirements.txt
+   ```
 
-Start command:
+4. **Start Command:**
 
-```text
-gunicorn database.app:app --bind 0.0.0.0:$PORT
-```
+   ```text
+   gunicorn database.app:app --bind 0.0.0.0:$PORT
+   ```
+
+5. **Instance type:** Free.
+6. Add the environment variables listed below in the service's `Environment` tab, then create the
+   service.
 
 The Flask server serves the Vite `dist` directory and the `/api/*` routes from the same origin.
 
+(`render.yaml` is still in the repo as a reference for these exact settings, and works if you ever
+want to use Blueprint with a card on file - the steps above are the card-free equivalent.)
+
 ### PostgreSQL (hosted outside Render)
 
-Render requires a payment card on file before it will provision its own Postgres database, even on
-the free plan - a fraud-prevention gate, not a real charge, but a blocker if none of your cards are
-accepted there. `render.yaml` sidesteps this entirely: it declares only the web service, and
-`DATABASE_URL` is a plain manually-set environment variable, so you can point it at Postgres hosted
-anywhere. Both of these are genuinely free with no card required at signup:
+Render's own managed Postgres has the same card-on-file requirement as Blueprint. `DATABASE_URL` is
+just a plain environment variable the app reads (see `database/app.py`), so it can point at Postgres
+hosted anywhere - it doesn't have to be a Render product. Both of these are genuinely free with no
+card required at signup:
 
 - **[Neon](https://neon.tech)** - create a project, copy the connection string it gives you (starts
   with `postgresql://`).
@@ -50,6 +64,11 @@ Either way, in the Render dashboard set:
 ```text
 DATABASE_URL=<the connection string from Neon/Supabase>
 ```
+
+Verified working end-to-end against a real Neon database (schema creation, register/login,
+checkout, and the Programme Catalogue seed all confirmed) - including the `channel_binding=require`
+parameter Neon adds to its connection strings, which needs a reasonably current `psycopg2`
+(already pinned via `psycopg2-binary>=2.9.10` in `database/requirements.txt`).
 
 If you'd rather use Render's own managed Postgres and don't mind adding a card, you can instead add
 a `databases:` block to `render.yaml` (see [Render's docs](https://render.com/docs/blueprint-spec#databases))
