@@ -50,8 +50,10 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 7,
 )
 
-JSON_COLUMNS = {'item', 'record', 'config_value', 'state_value'}
+JSON_COLUMNS = {'item', 'record', 'config_value', 'state_value', 'offering'}
 _db_initialized = False
+
+PROGRAMME_CATALOGUE_PATH = os.path.join(os.path.dirname(__file__), 'data', 'programme_catalogue.json')
 
 # Optional shared secret for the automation-friendly /api/checkout endpoint,
 # so scripts, barcode scanners, or the ESP32 relay can check items out with a
@@ -96,6 +98,12 @@ CREATE TABLE IF NOT EXISTS app_config (
 CREATE TABLE IF NOT EXISTS system_state (
     state_key TEXT PRIMARY KEY,
     state_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS programme_catalogue (
+    id TEXT PRIMARY KEY,
+    offering TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -226,7 +234,41 @@ def init_db():
         finally:
             connection.close()
 
+    _seed_programme_catalogue()
     _db_initialized = True
+
+
+def _seed_programme_catalogue():
+    """Idempotently loads database/data/programme_catalogue.json into the
+    programme_catalogue table. Safe to call on every startup - ON CONFLICT DO
+    NOTHING / INSERT OR IGNORE means an existing row is left alone, so a
+    future admin edit to one offering survives a restart.
+    """
+    if not os.path.isfile(PROGRAMME_CATALOGUE_PATH):
+        return
+    with open(PROGRAMME_CATALOGUE_PATH, 'r', encoding='utf-8') as f:
+        offerings = (json.load(f) or {}).get('offerings', [])
+    if not offerings:
+        return
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            for offering in offerings:
+                offering_id = offering.get('offeringId')
+                if not offering_id:
+                    continue
+                if USE_POSTGRES:
+                    cur.execute(
+                        'INSERT INTO programme_catalogue (id, offering) VALUES (%s, %s) '
+                        'ON CONFLICT (id) DO NOTHING',
+                        (offering_id, json.dumps(offering)),
+                    )
+                else:
+                    cur.execute(
+                        'INSERT OR IGNORE INTO programme_catalogue (id, offering) VALUES (%s, %s)',
+                        (offering_id, json.dumps(offering)),
+                    )
+        conn.commit()
 
 
 def is_unique_violation(exc: Exception) -> bool:
@@ -874,6 +916,47 @@ def model_config():
             )
         conn.commit()
     return jsonify({'modelConfig': config}), 200
+
+
+@app.route('/api/programme-catalogue', methods=['GET'])
+def programme_catalogue():
+    """Verified Petrosains programme offerings, served from the database
+    instead of the bundled static JSON. Intentionally public/no-login: the
+    guest 'Plan a Programme' flow on the login page has no session, and this
+    is non-sensitive read-only reference data.
+    """
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT offering FROM programme_catalogue ORDER BY id')
+            offerings = [row['offering'] for row in cur.fetchall()]
+    return jsonify({'source': 'programme_catalogue (database)', 'offerings': offerings}), 200
+
+
+@app.route('/api/programme-catalogue/seed', methods=['POST'])
+@login_required
+def seed_programme_catalogue_route():
+    """Staff-only hook for future catalogue maintenance (editing/adding
+    offerings without a code deploy). `force=true` replaces the whole table;
+    otherwise existing offering ids are updated and new ones are inserted.
+    """
+    data = request.get_json(silent=True) or {}
+    offerings = data.get('offerings') or []
+    force = bool(data.get('force'))
+    with db() as conn:
+        with conn.cursor() as cur:
+            if force:
+                cur.execute('DELETE FROM programme_catalogue')
+            for offering in offerings:
+                offering_id = offering.get('offeringId')
+                if not offering_id:
+                    continue
+                cur.execute(
+                    'INSERT INTO programme_catalogue (id, offering) VALUES (%s, %s) '
+                    'ON CONFLICT (id) DO UPDATE SET offering = EXCLUDED.offering, updated_at = NOW()',
+                    (offering_id, json.dumps(offering)),
+                )
+        conn.commit()
+    return jsonify({'message': 'Programme catalogue updated', 'count': len(offerings)}), 200
 
 
 @app.route('/api/state/import', methods=['POST'])
