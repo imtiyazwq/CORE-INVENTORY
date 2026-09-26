@@ -36,6 +36,21 @@ Vite forwards `/api` to `http://127.0.0.1:5000` during development.
 
 **No Gemini/OpenAI API key is required for the Programme Consultant.** It uses a local catalogue-guided recommendation engine in the Flask backend.
 
+## Running tests
+
+Backend (Flask API - `pytest` against a throwaway SQLite file, no network calls):
+
+```bash
+python -m pip install -r database/requirements-dev.txt
+pytest database/test_app.py -v
+```
+
+Frontend (pure business logic - filtering/sorting, YOLO-to-inventory mapping):
+
+```bash
+npm run test
+```
+
 ## Production / Render
 
 `render.yaml` builds the Vite frontend and runs the Flask app with Gunicorn. No external AI API environment variable is required.
