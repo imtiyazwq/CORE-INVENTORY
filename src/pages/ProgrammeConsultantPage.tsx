@@ -21,6 +21,7 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
+import { apiUrl } from '../services/apiBase';
 
 type YesNoUnsure = 'Yes' | 'No' | 'Not sure';
 type VenueType = 'Indoor' | 'Outdoor' | 'Sheltered outdoor' | 'Not sure';
@@ -540,11 +541,25 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
 
   useEffect(() => {
     let mounted = true;
-    fetch('/data-programme-catalogue.json')
-      .then((response) => {
+
+    // Prefer the database-backed catalogue (see database/data/programme_catalogue.json
+    // and GET /api/programme-catalogue, both intentionally public/no-login) so future
+    // catalogue edits don't require a frontend rebuild. The bundled static JSON is a
+    // fallback for when the backend is unreachable (e.g. offline guest kiosk).
+    const loadFromApi = () =>
+      fetch(apiUrl('/api/programme-catalogue')).then((response) => {
+        if (!response.ok) throw new Error(`API responded ${response.status}`);
+        return response.json() as Promise<CataloguePayload>;
+      });
+
+    const loadFromStaticFile = () =>
+      fetch('/data-programme-catalogue.json').then((response) => {
         if (!response.ok) throw new Error(`Could not load programme catalogue (${response.status}).`);
         return response.json() as Promise<CataloguePayload>;
-      })
+      });
+
+    loadFromApi()
+      .catch(() => loadFromStaticFile())
       .then((payload) => {
         if (!mounted) return;
         setCatalogue(Array.isArray(payload.offerings) ? payload.offerings : []);
