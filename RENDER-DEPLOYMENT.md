@@ -57,6 +57,19 @@ INVENTORY_API_KEY=<another-long-random-secret>
 See `database/README.md` for how to call it. Leaving this unset just means that one endpoint falls
 back to requiring a logged-in session like the rest of the API.
 
+Optionally, to enable DeepSeek-written "why this fits" narratives on the guest Programme
+Consultant, also set:
+
+```text
+DEEPSEEK_API_KEY=<your DeepSeek API key>
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+`render.yaml` already declares `DEEPSEEK_API_KEY` as a value you set manually in the Render
+dashboard (it can't be auto-generated like a secret). Leaving it unset just means the guest planner
+keeps its existing deterministic fit-reasons list instead of an AI-written summary - see
+`database/README.md`.
+
 The backend creates its tables automatically on the first API request.
 
 ## First deployment

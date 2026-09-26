@@ -64,6 +64,8 @@ interface CatalogueOffering {
   audiences?: string[];
   themes?: string[];
   objectives?: string[];
+  /** Inventory item names this offering needs; checked out on booking confirmation. */
+  requiredItems?: string[];
 }
 
 interface CataloguePayload {
@@ -97,6 +99,15 @@ interface ProgrammeOption {
   domains: string[];
   fitReasons: string[];
   warnings: string[];
+  /** Short DeepSeek-written explanation of fit; undefined until/unless AI narratives load. */
+  aiNarrative?: string;
+}
+
+interface BookingItemResult {
+  offeringId: string;
+  itemName: string | null;
+  status: 'checked_out' | 'out_of_stock' | 'not_found' | 'unknown_offering';
+  remainingAvailable?: number | null;
 }
 
 interface BookingDetails {
@@ -446,6 +457,13 @@ const ProgrammeCard: React.FC<{
           })}
         </div>
 
+        {option.aiNarrative && (
+          <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-4">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-violet-900 mb-1.5"><Sparkles className="w-3.5 h-3.5" />AI summary (DeepSeek)</div>
+            <p className="text-xs leading-relaxed text-violet-950">{option.aiNarrative}</p>
+          </div>
+        )}
+
         <div className="grid gap-3 lg:grid-cols-2">
           <div className="rounded-xl border border-slate-200 p-4">
             <div className="text-xs font-bold text-slate-900 mb-2">Why this fits</div>
@@ -457,10 +475,20 @@ const ProgrammeCard: React.FC<{
           </div>
           <div className="rounded-xl border border-slate-200 p-4">
             <div className="text-xs font-bold text-slate-900 mb-2">Inventory readiness</div>
-            <div className="flex gap-2 text-xs text-slate-600">
-              <Database className="w-4 h-4 mt-0.5 text-amber-600 shrink-0" />
-              <span>Front-end prototype: verified material-to-inventory mapping and live stock reservation require backend integration before checkout can be confirmed.</span>
-            </div>
+            {(() => {
+              const requiredItems = Array.from(new Set(option.offerings.flatMap((o) => o.requiredItems || [])));
+              return requiredItems.length > 0 ? (
+                <div className="flex gap-2 text-xs text-slate-600">
+                  <Database className="w-4 h-4 mt-0.5 text-teal-700 shrink-0" />
+                  <span>Confirming this booking reserves from live inventory: {requiredItems.join(', ')}.</span>
+                </div>
+              ) : (
+                <div className="flex gap-2 text-xs text-slate-600">
+                  <Database className="w-4 h-4 mt-0.5 text-slate-400 shrink-0" />
+                  <span>No trackable equipment is mapped to this activity (e.g. a consumable-ingredient or narration-only show).</span>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -538,6 +566,10 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
   const [booking, setBooking] = useState<BookingDetails>(EMPTY_BOOKING);
   const [bookingReference, setBookingReference] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [bookingResults, setBookingResults] = useState<BookingItemResult[] | null>(null);
+  const [bookingInProgress, setBookingInProgress] = useState(false);
+  const [bookingCheckoutError, setBookingCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -593,6 +625,44 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
     }));
   };
 
+  // Asks DeepSeek to write a short "why this fits" narrative for each already
+  // -ranked option. DeepSeek never picks offerings - buildProgrammeOptions()
+  // already did that deterministically - it only explains the pick in plain
+  // language, grounded strictly to the titles/reasons/warnings it is given.
+  // Silent no-op on any failure (not configured, offline, bad response): the
+  // existing bullet-point fitReasons UI is the fallback and needs no changes.
+  const loadAiNarratives = async (generated: ProgrammeOption[], forRequest: ProgrammeRequest) => {
+    if (!generated.length) return;
+    setAiLoading(true);
+    try {
+      const response = await fetch(apiUrl('/api/consultant/recommend'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request: forRequest,
+          options: generated.map((option) => ({
+            id: option.id,
+            title: option.title,
+            offeringTitles: option.offerings.map((o) => o.activityTitle),
+            fitReasons: option.fitReasons,
+            warnings: option.warnings,
+          })),
+        }),
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as { narratives?: Record<string, string> };
+      const narratives = payload.narratives || {};
+      if (!Object.keys(narratives).length) return;
+      setOptions((current) => current.map((option) => (
+        narratives[option.id] ? { ...option, aiNarrative: narratives[option.id] } : option
+      )));
+    } catch {
+      // Offline or DeepSeek unavailable - keep the deterministic fitReasons as-is.
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const submitRequirements = (event: React.FormEvent) => {
     event.preventDefault();
     setFormError(null);
@@ -606,6 +676,7 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
     setSelected(null);
     setStep('recommendations');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    void loadAiNarratives(generated, request);
   };
 
   const chooseProgramme = (option: ProgrammeOption) => {
@@ -614,7 +685,7 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const submitBooking = (event: React.FormEvent) => {
+  const submitBooking = async (event: React.FormEvent) => {
     event.preventDefault();
     setFormError(null);
     if (!booking.fullName.trim() || !booking.organisation.trim() || !booking.email.trim() || !booking.phone.trim() || !booking.programmeDate) {
@@ -629,10 +700,39 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
       booking,
       selected,
       createdAt: new Date().toISOString(),
-      prototypeOnly: true,
     }));
     setStep('confirmation');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Reserve the selected programme's equipment from live inventory now that
+    // the booking is confirmed. Unlike the recommendation step (which never
+    // touches inventory), this is the one action that actually checks items out.
+    if (!selected) return;
+    setBookingResults(null);
+    setBookingCheckoutError(null);
+    setBookingInProgress(true);
+    try {
+      const response = await fetch(apiUrl('/api/programme-catalogue/book'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offeringIds: selected.offerings.map((o) => o.offeringId),
+          bookingReference: reference,
+          contactName: booking.fullName.trim(),
+          organisation: booking.organisation.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Booking request failed (${response.status}).`);
+      }
+      const payload = await response.json() as { results: BookingItemResult[] };
+      setBookingResults(payload.results || []);
+    } catch (error) {
+      setBookingCheckoutError(error instanceof Error ? error.message : 'Could not reserve inventory for this booking.');
+    } finally {
+      setBookingInProgress(false);
+    }
   };
 
   const startOver = () => {
@@ -642,6 +742,8 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
     setBooking(EMPTY_BOOKING);
     setBookingReference('');
     setFormError(null);
+    setBookingResults(null);
+    setBookingCheckoutError(null);
     setStep('requirements');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -777,6 +879,12 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
               {requestSummary.map(([label, value]) => <span key={label}><strong className="text-slate-800">{label}:</strong> {value}</span>)}
             </div>
 
+            {aiLoading && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-3 flex items-center gap-2 text-xs font-semibold text-violet-900">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />Asking DeepSeek to summarise why each option fits...
+              </div>
+            )}
+
             {options.length === 0 ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-950"><div className="flex items-center gap-2 font-bold"><AlertTriangle className="w-5 h-5" />No verified catalogue configuration fits the selected hard constraints.</div><p className="mt-2 text-sm">Try increasing programme duration, changing venue/resource restrictions, or reviewing the age requirement. No unsupported offering has been invented.</p></div>
             ) : options.map((option) => <ProgrammeCard key={option.id} option={option} request={request} onChoose={() => chooseProgramme(option)} />)}
@@ -832,9 +940,49 @@ export const ProgrammeConsultantPage: React.FC<ProgrammeConsultantPageProps> = (
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
               <div className="bg-[#005f60] text-white p-6 text-center"><div className="mx-auto w-12 h-12 rounded-full bg-white/15 flex items-center justify-center"><CheckCircle2 className="w-7 h-7 text-teal-100" /></div><div className="mt-3 text-[10px] uppercase tracking-[0.18em] font-bold text-teal-100">Booking preview created</div><h2 className="mt-1 text-2xl font-extrabold">{bookingReference}</h2></div>
               <div className="p-6 space-y-5">
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950"><strong>This is a front-end prototype confirmation only.</strong> No database booking has been created and no inventory has been reserved or checked out. Those actions require the backend transaction layer.</div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700"><strong>No booking record is saved.</strong> This reference is generated in your browser only. Equipment reservation below, however, is real - it checks items out of live CORE INVENTORY.</div>
                 <div className="grid gap-3 sm:grid-cols-2 text-sm"><div className="rounded-xl border border-slate-200 p-4"><div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Programme</div><div className="mt-1 font-bold text-slate-900">{selected.title}</div><div className="mt-1 text-xs text-slate-500">{selected.offerings.map((item) => item.offeringId).join(' • ')}</div></div><div className="rounded-xl border border-slate-200 p-4"><div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Participants</div><div className="mt-1 font-bold text-slate-900">{request.participantCount}</div><div className="mt-1 text-xs text-slate-500">{request.ageGroup}</div></div><div className="rounded-xl border border-slate-200 p-4"><div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Contact</div><div className="mt-1 font-bold text-slate-900">{booking.fullName}</div><div className="mt-1 text-xs text-slate-500">{booking.organisation}</div></div><div className="rounded-xl border border-slate-200 p-4"><div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Programme date</div><div className="mt-1 font-bold text-slate-900">{booking.programmeDate}</div><div className="mt-1 text-xs text-slate-500">{booking.preferredStartTime || 'Start time not specified'}</div></div></div>
                 <div className="rounded-xl border border-slate-200 p-4"><div className="text-xs font-bold text-slate-900">Verified activities</div><div className="mt-3 space-y-2">{selected.offerings.map((offering) => <div key={offering.offeringId} className="flex items-center justify-between gap-2 text-xs"><span><strong>{offering.offeringId}</strong> — {offering.activityTitle}</span><span className="rounded-full bg-teal-100 text-teal-800 px-2 py-0.5 font-bold">Verified</span></div>)}</div></div>
+
+                <div className="rounded-xl border border-slate-200 p-4">
+                  <div className="text-xs font-bold text-slate-900 mb-2">Equipment reservation</div>
+                  {bookingInProgress && (
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-600"><Loader2 className="w-3.5 h-3.5 animate-spin" />Checking out equipment from live inventory...</div>
+                  )}
+                  {bookingCheckoutError && (
+                    <div className="flex items-start gap-2 text-xs text-rose-800"><AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />{bookingCheckoutError}</div>
+                  )}
+                  {!bookingInProgress && !bookingCheckoutError && bookingResults && (
+                    bookingResults.length === 0 ? (
+                      <p className="text-xs text-slate-500">No trackable equipment is mapped to the selected activities - nothing to reserve.</p>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {bookingResults.map((result, index) => {
+                          const label = result.itemName || `(${result.offeringId} equipment list)`;
+                          const statusStyle: Record<BookingItemResult['status'], string> = {
+                            checked_out: 'bg-emerald-100 text-emerald-800',
+                            out_of_stock: 'bg-amber-100 text-amber-800',
+                            not_found: 'bg-slate-200 text-slate-700',
+                            unknown_offering: 'bg-rose-100 text-rose-800',
+                          };
+                          const statusText: Record<BookingItemResult['status'], string> = {
+                            checked_out: 'Checked out',
+                            out_of_stock: 'Out of stock',
+                            not_found: 'Not in inventory',
+                            unknown_offering: 'Unknown offering',
+                          };
+                          return (
+                            <li key={`${result.offeringId}-${label}-${index}`} className="flex items-center justify-between gap-2 text-xs">
+                              <span className="text-slate-700">{result.offeringId} — {label}</span>
+                              <span className={`rounded-full px-2 py-0.5 font-bold ${statusStyle[result.status]}`}>{statusText[result.status]}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )
+                  )}
+                </div>
+
                 <div className="flex flex-col sm:flex-row gap-3"><button type="button" onClick={startOver} className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-[#005f60] px-4 py-3 text-sm font-bold text-white hover:bg-[#004b4c] cursor-pointer"><RotateCcw className="w-4 h-4" />Start Another Programme Request</button><button type="button" onClick={onBackToLogin} className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"><ArrowLeft className="w-4 h-4" />Return to Login</button></div>
               </div>
             </div>

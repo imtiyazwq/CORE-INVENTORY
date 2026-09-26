@@ -1,5 +1,10 @@
 # Front-end Programme Consultant prototype
 
+> **Update:** Live inventory reservation/checkout at booking confirmation is now implemented
+> (`POST /api/programme-catalogue/book`, see `database/README.md`) - the "Not implemented" list
+> below is out of date on that one point. A persistent booking record and Activity History entries
+> still do not exist.
+
 This build intentionally implements only the front-end side of the requested guest programme-planning workflow.
 
 Implemented in the front end:

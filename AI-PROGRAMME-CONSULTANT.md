@@ -1,5 +1,13 @@
 # AI Programme Consultant — No API Key Build
 
+> **Update:** This document describes an earlier backend-driven design
+> (`database/programme_consultant.py`, `/api/consultant/chat`) that was never actually built - the
+> real implementation is the client-side matching engine in `ProgrammeConsultantPage.tsx` described
+> in `FRONTEND-PROGRAMME-CONSULTANT.md`. DeepSeek has since been added on top of that real
+> implementation (`POST /api/consultant/recommend`, see `database/README.md`), so the "no API key,
+> no LLM" positioning below no longer applies - DeepSeek is optional (the app degrades gracefully
+> without it) but is real when configured.
+
 This build adds the Petrosains Programme Consultant directly to the existing CORE INVENTORY application while preserving YOLO, Inventory, Stock Check, authentication, history, settings, shared inventory, and offline mutation behaviour.
 
 ## Important: no Gemini/API key is required
