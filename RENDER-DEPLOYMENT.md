@@ -3,7 +3,7 @@
 ## What this version changes
 
 - Login/register are backed by the server session instead of browser-only localStorage.
-- Inventory, scans, and stock checks are stored in Render PostgreSQL.
+- Inventory, scans, and stock checks are stored in PostgreSQL (hosted wherever you point `DATABASE_URL` - see below).
 - A YOLO scan is saved as `Pending Review`; it never changes inventory directly.
 - Stock Check is the approval gate. Existing items are updated only after reconciliation. A detected item that is not yet in inventory can be created only when the scan is approved in Stock Check.
 - The browser refreshes shared state every 2 seconds, so another user's approved changes appear automatically.
@@ -32,13 +32,29 @@ gunicorn database.app:app --bind 0.0.0.0:$PORT
 
 The Flask server serves the Vite `dist` directory and the `/api/*` routes from the same origin.
 
-### PostgreSQL
+### PostgreSQL (hosted outside Render)
 
-Create a Render PostgreSQL database named `visionstock-db` and make its connection string available to the web service as:
+Render requires a payment card on file before it will provision its own Postgres database, even on
+the free plan - a fraud-prevention gate, not a real charge, but a blocker if none of your cards are
+accepted there. `render.yaml` sidesteps this entirely: it declares only the web service, and
+`DATABASE_URL` is a plain manually-set environment variable, so you can point it at Postgres hosted
+anywhere. Both of these are genuinely free with no card required at signup:
+
+- **[Neon](https://neon.tech)** - create a project, copy the connection string it gives you (starts
+  with `postgresql://`).
+- **[Supabase](https://supabase.com)** - create a project, then copy the connection string from
+  Project Settings → Database → Connection string (use the "URI" / pooler form).
+
+Either way, in the Render dashboard set:
 
 ```text
-DATABASE_URL
+DATABASE_URL=<the connection string from Neon/Supabase>
 ```
+
+If you'd rather use Render's own managed Postgres and don't mind adding a card, you can instead add
+a `databases:` block to `render.yaml` (see [Render's docs](https://render.com/docs/blueprint-spec#databases))
+and reference it with `fromDatabase: { name: ..., property: connectionString }` in place of the
+plain `DATABASE_URL` env var above.
 
 Also set:
 

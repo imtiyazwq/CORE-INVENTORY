@@ -15,11 +15,10 @@ services:
         sync: false
       - key: DEEPSEEK_MODEL
         value: deepseek-chat
+      # Points at an external Postgres (e.g. a free Neon or Supabase project)
+      # instead of a Render-managed database, since Render requires a card on
+      # file to provision its own Postgres even on the free plan. Paste the
+      # connection string in the Render dashboard after the first deploy, or
+      # here before deploying - see RENDER-DEPLOYMENT.md.
       - key: DATABASE_URL
-        fromDatabase:
-          name: core-inventory-db
-          property: connectionString
-
-databases:
-  - name: core-inventory-db
-    plan: free
+        sync: false
