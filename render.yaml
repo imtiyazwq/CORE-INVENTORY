@@ -11,6 +11,10 @@ services:
         value: "true"
       - key: INVENTORY_API_KEY
         generateValue: true
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
       - key: DATABASE_URL
         fromDatabase:
           name: core-inventory-db

@@ -14,6 +14,7 @@ import sqlite3
 from functools import wraps
 from typing import Any
 
+import requests
 from flask import Flask, jsonify, request, session, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -21,6 +22,17 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 DIST = os.path.join(ROOT, 'dist')
 SCHEMA = os.path.join(os.path.dirname(__file__), 'schema.sql')
 LOCAL_DATABASE = os.path.join(os.path.dirname(__file__), 'visionstock_local.db')
+
+# Best-effort local .env loading (DEEPSEEK_API_KEY, DEEPSEEK_MODEL, etc.) so
+# Windows developers don't have to export env vars by hand. Render/production
+# already supplies real environment variables, so this is optional there.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(os.path.join(ROOT, '.env'))
+except ImportError:
+    pass
+
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
 USE_POSTGRES = bool(DATABASE_URL)
 
@@ -60,6 +72,15 @@ PROGRAMME_CATALOGUE_PATH = os.path.join(os.path.dirname(__file__), 'data', 'prog
 # header instead of a browser session cookie. Unset means that endpoint is
 # only reachable by an already-logged-in session, same as the rest of the API.
 INVENTORY_API_KEY = os.environ.get('INVENTORY_API_KEY', '').strip()
+
+# DeepSeek powers the Programme Consultant's AI narrative (see
+# /api/consultant/recommend). DeepSeek's API is OpenAI-compatible. Unset
+# DEEPSEEK_API_KEY means the consultant endpoints report not-ready and the
+# frontend falls back to its local, deterministic catalogue matching -
+# recommendations always come from the verified catalogue either way.
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '').strip()
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat').strip() or 'deepseek-chat'
+DEEPSEEK_BASE_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').strip().rstrip('/')
 
 
 LOCAL_SCHEMA = """
@@ -957,6 +978,189 @@ def seed_programme_catalogue_route():
                 )
         conn.commit()
     return jsonify({'message': 'Programme catalogue updated', 'count': len(offerings)}), 200
+
+
+def _call_deepseek_chat(messages, *, temperature=0.4, max_tokens=700, timeout=20):
+    """DeepSeek's API is OpenAI-compatible. Raises on any failure - callers
+    decide how to degrade (the frontend falls back to local, deterministic
+    catalogue matching when this isn't available).
+    """
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError('DEEPSEEK_API_KEY is not configured.')
+    response = requests.post(
+        f'{DEEPSEEK_BASE_URL}/chat/completions',
+        headers={
+            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'model': DEEPSEEK_MODEL,
+            'messages': messages,
+            'temperature': temperature,
+            'max_tokens': max_tokens,
+            'response_format': {'type': 'json_object'},
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()['choices'][0]['message']['content']
+
+
+@app.route('/api/consultant/status', methods=['GET'])
+def consultant_status():
+    """Public: lets the guest UI show whether AI narratives are available."""
+    return jsonify({
+        'ready': bool(DEEPSEEK_API_KEY),
+        'provider': 'deepseek',
+        'model': DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None,
+    }), 200
+
+
+@app.route('/api/consultant/recommend', methods=['POST'])
+def consultant_recommend():
+    """Generates a short, grounded AI narrative per already-ranked programme
+    option. DeepSeek never selects offerings - the deterministic catalogue
+    matching in ProgrammeConsultantPage.tsx does that - it only explains, in
+    plain language, why the given verified offerings suit the stated request.
+    It is grounded strictly to the titles/fitReasons/warnings it is given and
+    told not to introduce any other activity, preserving the catalogue's
+    anti-hallucination guarantee.
+    """
+    if not DEEPSEEK_API_KEY:
+        return jsonify({'error': 'DeepSeek is not configured on this server.'}), 503
+
+    data = request.get_json(silent=True) or {}
+    requester_needs = data.get('request') or {}
+    options = data.get('options') or []
+    if not options:
+        return jsonify({'error': 'No programme options supplied.'}), 400
+
+    prompt_options = [
+        {
+            'id': option.get('id'),
+            'title': option.get('title'),
+            'offeringTitles': option.get('offeringTitles') or [],
+            'fitReasons': option.get('fitReasons') or [],
+            'warnings': option.get('warnings') or [],
+        }
+        for option in options[:3]
+        if option.get('id')
+    ]
+    if not prompt_options:
+        return jsonify({'error': 'No valid programme options supplied.'}), 400
+
+    system_prompt = (
+        "You are the Petrosains Programme Consultant. Write a short, friendly, "
+        "2-3 sentence explanation of why each already-selected programme option "
+        "suits the requester's stated needs. Use ONLY the activity titles, fit "
+        "reasons and warnings given to you - never invent, add, or imply any "
+        "other activity, statistic, or claim not present in the input. "
+        'Respond with strict JSON: {"narratives": {"<option id>": "<narrative text>"}}.'
+    )
+    user_prompt = json.dumps({'requesterNeeds': requester_needs, 'options': prompt_options})
+
+    try:
+        # Generous max_tokens: some DeepSeek models (e.g. deepseek-flash) spend a
+        # large, variable number of tokens on internal reasoning before writing
+        # the final JSON content, so a tight budget truncates the JSON mid-string.
+        content = _call_deepseek_chat([
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ], max_tokens=3000, timeout=40)
+        narratives = json.loads(content).get('narratives')
+        if not isinstance(narratives, dict):
+            raise ValueError('Malformed narratives payload from DeepSeek.')
+    except Exception as exc:  # network error, timeout, bad JSON, etc.
+        return jsonify({'error': f'DeepSeek request failed: {exc}'}), 503
+
+    # Guard against the model inventing option ids that were never offered.
+    valid_ids = {option['id'] for option in prompt_options}
+    narratives = {k: v for k, v in narratives.items() if k in valid_ids and isinstance(v, str)}
+
+    return jsonify({'narratives': narratives, 'provider': 'deepseek', 'model': DEEPSEEK_MODEL}), 200
+
+
+def _find_best_inventory_match(cur, item_name: str):
+    """Finds the inventory row named `item_name` (case-insensitive) with the
+    most available stock across all locations."""
+    if USE_POSTGRES:
+        cur.execute(
+            "SELECT id, item FROM inventory_items WHERE LOWER(item->>'name') = LOWER(%s) "
+            "ORDER BY (item->>'availableQuantity')::int DESC LIMIT 1 FOR UPDATE",
+            (item_name,),
+        )
+        return cur.fetchone()
+
+    cur.execute('SELECT id, item FROM inventory_items')
+    best = None
+    for row in cur.fetchall():
+        item = row['item'] or {}
+        if str(item.get('name', '')).lower() != item_name.lower():
+            continue
+        if best is None or int(item.get('availableQuantity', 0)) > int((best['item'] or {}).get('availableQuantity', 0)):
+            best = row
+    return best
+
+
+@app.route('/api/programme-catalogue/book', methods=['POST'])
+def book_programme():
+    """Confirms a guest programme booking by checking out one unit of each
+    booked offering's required equipment from live inventory.
+
+    Intentionally public, like GET /api/programme-catalogue - guests have no
+    session - but scoped tightly: it only ever moves stock for offerings that
+    exist in the verified catalogue, and only ever checks out the fixed
+    per-offering `requiredItems` list at a quantity of 1 each, so a booking
+    can never be used to request an arbitrary quantity of anything.
+    """
+    data = request.get_json(silent=True) or {}
+    offering_ids = data.get('offeringIds') or []
+    booking_reference = str(data.get('bookingReference') or '').strip()
+    contact_name = str(data.get('contactName') or 'Programme Booking').strip()
+    organisation = str(data.get('organisation') or '').strip()
+
+    if not offering_ids:
+        return jsonify({'error': 'offeringIds is required.'}), 400
+    if not booking_reference:
+        return jsonify({'error': 'bookingReference is required.'}), 400
+
+    team = f'Programme Booking - {organisation}' if organisation else 'Programme Booking'
+    results = []
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            for offering_id in offering_ids:
+                cur.execute('SELECT offering FROM programme_catalogue WHERE id = %s', (offering_id,))
+                row = cur.fetchone()
+                if not row:
+                    results.append({'offeringId': offering_id, 'itemName': None, 'status': 'unknown_offering'})
+                    continue
+
+                required_items = (row['offering'] or {}).get('requiredItems') or []
+                for item_name in required_items:
+                    match = _find_best_inventory_match(cur, item_name)
+                    if not match:
+                        results.append({'offeringId': offering_id, 'itemName': item_name, 'status': 'not_found'})
+                        continue
+                    if int((match['item'] or {}).get('availableQuantity', 0)) <= 0:
+                        results.append({'offeringId': offering_id, 'itemName': item_name, 'status': 'out_of_stock'})
+                        continue
+                    checked_out = _apply_checkout(cur, match['id'], 1, contact_name, team)
+                    results.append({
+                        'offeringId': offering_id,
+                        'itemName': item_name,
+                        'status': 'checked_out',
+                        'itemId': match['id'],
+                        'remainingAvailable': checked_out.get('availableQuantity') if checked_out else None,
+                    })
+        conn.commit()
+
+    all_succeeded = all(r['status'] == 'checked_out' for r in results) if results else True
+    return jsonify({
+        'bookingReference': booking_reference,
+        'results': results,
+        'allSucceeded': all_succeeded,
+    }), 200
 
 
 @app.route('/api/state/import', methods=['POST'])

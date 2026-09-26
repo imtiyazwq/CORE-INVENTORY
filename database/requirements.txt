@@ -1,5 +1,9 @@
 Flask==3.1.0
 Werkzeug==3.1.3
+requests>=2.31.0
+# Optional: auto-loads DEEPSEEK_API_KEY/DEEPSEEK_MODEL from a local .env file.
+# Not required in production - Render env vars are already real environment variables.
+python-dotenv>=1.0.0
 # Render/Linux production dependencies. Local Windows development uses SQLite,
 # so it does not need PostgreSQL, pg_config, psycopg2, or gunicorn.
 gunicorn>=23.0.0; platform_system != "Windows"

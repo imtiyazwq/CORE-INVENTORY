@@ -74,6 +74,9 @@
         "Microbit",
         "Arduino 100",
         "Gas Detector"
+      ],
+      "requiredItems": [
+        "Mini Drone Kit"
       ]
     },
     {
@@ -147,6 +150,9 @@
         "Arduino 100",
         "Gas Detector",
         "Mini Drone"
+      ],
+      "requiredItems": [
+        "Micro:bit"
       ]
     },
     {
@@ -219,6 +225,9 @@
         "Water Water Everywhere",
         "Colour Play",
         "Sustainable Suds"
+      ],
+      "requiredItems": [
+        "Plastic Bottle (500ml, Reused)"
       ]
     },
     {
@@ -291,6 +300,9 @@
         "LED Lantern",
         "Bottle Aquarium",
         "Fabulous Fizzy"
+      ],
+      "requiredItems": [
+        "Poster Paint Set"
       ]
     },
     {
@@ -365,6 +377,11 @@
         "Arduino 100",
         "Arduino 200",
         "Microbit"
+      ],
+      "requiredItems": [
+        "Gas Detector MQ6",
+        "Arduino Uno",
+        "Breadboard"
       ]
     },
     {
@@ -439,6 +456,12 @@
         "LED Flashlight",
         "Colour Play",
         "Solar Fan"
+      ],
+      "requiredItems": [
+        "LED Red",
+        "LED Blue",
+        "CR2032 battery holder",
+        "Copper Tape"
       ]
     },
     {
@@ -513,6 +536,10 @@
         "DIY Catapult",
         "LED Flashlight",
         "Microbit"
+      ],
+      "requiredItems": [
+        "DC Motor 3V",
+        "Permanent marker"
       ]
     },
     {
@@ -584,6 +611,11 @@
         "LED Lantern",
         "Arduino 100",
         "Solar Fan"
+      ],
+      "requiredItems": [
+        "LED Red",
+        "CR2032 battery holder",
+        "Rocker Switch 2pin (Black)"
       ]
     },
     {
@@ -656,6 +688,11 @@
         "Arduino 200",
         "Microbit",
         "Gas Detector"
+      ],
+      "requiredItems": [
+        "Arduino Uno",
+        "Breadboard",
+        "Jumper Wire M-M"
       ]
     },
     {
@@ -730,6 +767,13 @@
         "Arduino 100",
         "Arduino 300",
         "Gas Detector"
+      ],
+      "requiredItems": [
+        "Arduino Uno",
+        "Breadboard",
+        "HC-SR04 Ultrasonic Sensor",
+        "DHT11 Temperature and humidity sensor",
+        "Servo Motor SG90"
       ]
     },
     {
@@ -803,6 +847,11 @@
         "Arduino 200",
         "Gas Detector",
         "Solar Fan"
+      ],
+      "requiredItems": [
+        "NodeMCU",
+        "Jumper Wire M-M",
+        "Jumper Wire M-F"
       ]
     },
     {
@@ -877,6 +926,10 @@
         "Scribbling Machine",
         "Mini Drone",
         "Solar Fan"
+      ],
+      "requiredItems": [
+        "Popsicle stick",
+        "Rubber Band"
       ]
     },
     {
@@ -949,7 +1002,8 @@
         "Cool Chem Show",
         "Fabulous Fizzy",
         "Water Water Everywhere"
-      ]
+      ],
+      "requiredItems": []
     },
     {
       "offeringId": "ACT-014",
@@ -1021,6 +1075,11 @@
         "Bottle Aquarium",
         "Cool Chem Show",
         "Sustainable Suds"
+      ],
+      "requiredItems": [
+        "Beaker 250ml",
+        "Test tube",
+        "Universal indicator"
       ]
     },
     {
@@ -1092,6 +1151,10 @@
         "Elephant Toothpaste",
         "Water Water Everywhere",
         "Cool Chem Show"
+      ],
+      "requiredItems": [
+        "Bunsen burner",
+        "Safety Lighter"
       ]
     },
     {
@@ -1164,7 +1227,8 @@
         "Bottle Aquarium",
         "Colour Play",
         "Sustainable Suds"
-      ]
+      ],
+      "requiredItems": []
     },
     {
       "offeringId": "ACT-017",
@@ -1236,6 +1300,11 @@
         "Fabulous Fizzy",
         "Elephant Toothpaste",
         "DIY Ice Cream"
+      ],
+      "requiredItems": [
+        "Copper (II) Chloride 2-Hydrate",
+        "Hydrogen Peroxide Solution 6%",
+        "Universal indicator"
       ]
     },
     {
@@ -1309,6 +1378,9 @@
         "Cool Chem Show",
         "Bottle Aquarium",
         "Solar Fan"
+      ],
+      "requiredItems": [
+        "Sodium Hydroxide (Lye)"
       ]
     },
     {
@@ -1383,6 +1455,10 @@
         "LED Flashlight",
         "DIY Catapult",
         "Sustainable Suds"
+      ],
+      "requiredItems": [
+        "5V Solar Panel Kit",
+        "DC Motor 3V"
       ]
     },
     {
@@ -1455,6 +1531,10 @@
         "Cool Chem Show",
         "Elephant Toothpaste",
         "Colour Play"
+      ],
+      "requiredItems": [
+        "Baking Soda",
+        "White Vinegar"
       ]
     },
     {
@@ -1528,6 +1608,10 @@
         "Cool Chem Show",
         "Fabulous Fizzy",
         "Combustion Show"
+      ],
+      "requiredItems": [
+        "Hydrogen Peroxide Solution 6%",
+        "Dish Soap"
       ]
     }
   ],

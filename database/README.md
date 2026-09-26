@@ -30,6 +30,8 @@ SQLite automatically, so the same code path runs against either backend.
 | `POST /api/mutations/relay` | session | Replays one queued `{action, payload}` mutation - used by the offline ESP-NOW mesh relay and by the frontend's own pending-mutation flush |
 | `GET /api/programme-catalogue` | **public** | Verified Petrosains programme offerings - see below |
 | `POST /api/programme-catalogue/seed` | session | Staff-only reseed/update hook for future catalogue maintenance |
+| `POST /api/programme-catalogue/book` | **public** | Checks out a booked programme's required equipment from live inventory - see below |
+| `GET /api/consultant/status`, `POST /api/consultant/recommend` | **public** | DeepSeek-backed "why this fits" narratives for the guest planner - see below |
 
 ### Automation-friendly checkout (`POST /api/checkout`)
 
@@ -58,9 +60,38 @@ have no session. `POST /api/programme-catalogue/seed` (staff session required) l
 updated offerings without a frontend rebuild - pass `{"offerings": [...], "force": true}` to
 replace the table wholesale, or omit `force` to upsert individual offerings by `offeringId`.
 
-This table is the groundwork for future programme-booking work (persistent bookings, live
-inventory reservation at confirmation time, Activity History entries) - none of that exists yet;
-today the table is read-only reference data.
+This table is also the groundwork for future programme-booking work (a persistent booking record,
+Activity History entries) - that part still doesn't exist. Live inventory reservation at
+confirmation time, however, is implemented (see below).
+
+### Booking equipment reservation (`POST /api/programme-catalogue/book`)
+
+Called by the guest planner's confirmation step. Body: `{"offeringIds": [...], "bookingReference":
+"...", "contactName": "...", "organisation": "..."}`. For each `offeringId`, every item name in
+that offering's `requiredItems` (see `database/data/programme_catalogue.json`) is checked out at a
+fixed quantity of 1 via the same `_apply_checkout` logic `/api/inventory/checkout` uses, attributed
+to `contactName` under a `Programme Booking - <organisation>` team. Response lists a per-item
+`status`: `checked_out`, `out_of_stock`, `not_found` (no inventory row with that name), or
+`unknown_offering` (an `offeringId` not in the catalogue). Public and deliberately narrow: it can
+only move the fixed, catalogue-defined quantity for a real verified offering, never an arbitrary
+amount of anything. No booking record is persisted - only the resulting inventory checkouts are.
+
+### AI Programme narratives (`GET /api/consultant/status`, `POST /api/consultant/recommend`)
+
+DeepSeek (OpenAI-compatible API) writes a short, grounded explanation of why an already-ranked
+programme option fits a guest's stated requirements. The deterministic catalogue matching in
+`ProgrammeConsultantPage.tsx` still does all of the actual offering selection/scoring - DeepSeek
+never picks offerings and is instructed to use only the titles/fit-reasons/warnings it's given, and
+the backend drops any narrative keyed to an option id it wasn't given. This keeps the catalogue's
+anti-hallucination guarantee even with a real LLM in the loop.
+
+Requires `DEEPSEEK_API_KEY` (and optionally `DEEPSEEK_MODEL`, default `deepseek-chat`;
+`DEEPSEEK_BASE_URL`, default `https://api.deepseek.com`) as environment variables, or in a `.env`
+file at the project root for local development (auto-loaded via `python-dotenv` if installed).
+`GET /api/consultant/status` reports `{"ready": bool, "provider": "deepseek", "model": ...}` so the
+frontend knows whether to expect narratives. If DeepSeek isn't configured or the call fails for any
+reason, `/api/consultant/recommend` returns 503 and the frontend silently keeps its existing
+deterministic fit-reasons list - the guest planner works identically either way.
 
 ## Running locally
 
