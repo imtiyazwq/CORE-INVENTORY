@@ -141,7 +141,6 @@ export interface StockCheckItem {
   expected: number;
   detected: number;
   difference: number;
-  variance: number;
   status: 'Matched' | 'Short' | 'Extra';
 }
 
