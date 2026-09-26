@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Search,
   Download,
@@ -92,6 +92,57 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
 
   const handleExportCSV = () => {
     exportInventoryToCSV(filteredAndSortedItems);
+  };
+
+  // The table's native horizontal scrollbar sits at the bottom of the whole
+  // table, which can be far below the viewport once there are many rows -
+  // effectively unreachable without scrolling all the way down first. This
+  // mirrors it into a slim bar that stays pinned to the bottom of the visible
+  // viewport (via `sticky`) instead, syncing scrollLeft both ways so either
+  // one can be used interchangeably.
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const shadowScrollRef = useRef<HTMLDivElement>(null);
+  const isSyncingScrollRef = useRef(false);
+  const [tableScrollWidth, setTableScrollWidth] = useState(0);
+  const [needsHorizontalScroll, setNeedsHorizontalScroll] = useState(false);
+
+  useEffect(() => {
+    const tableEl = tableScrollRef.current;
+    if (!tableEl) return;
+
+    const updateScrollMetrics = () => {
+      setTableScrollWidth(tableEl.scrollWidth);
+      setNeedsHorizontalScroll(tableEl.scrollWidth > tableEl.clientWidth + 1);
+    };
+
+    updateScrollMetrics();
+    const resizeObserver = new ResizeObserver(updateScrollMetrics);
+    resizeObserver.observe(tableEl);
+    window.addEventListener('resize', updateScrollMetrics);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateScrollMetrics);
+    };
+  }, [filteredAndSortedItems.length]);
+
+  const handleTableScroll = () => {
+    if (isSyncingScrollRef.current) {
+      isSyncingScrollRef.current = false;
+      return;
+    }
+    if (!tableScrollRef.current || !shadowScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    shadowScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+  };
+
+  const handleShadowScroll = () => {
+    if (isSyncingScrollRef.current) {
+      isSyncingScrollRef.current = false;
+      return;
+    }
+    if (!tableScrollRef.current || !shadowScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    tableScrollRef.current.scrollLeft = shadowScrollRef.current.scrollLeft;
   };
 
   const renderSortIndicator = (field: SortField) => {
@@ -251,7 +302,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
 
       {/* Full Inventory Catalog Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" ref={tableScrollRef} onScroll={handleTableScroll}>
           <table className="w-full text-left text-xs whitespace-nowrap border-collapse">
             <thead className="bg-slate-100/90 border-b-2 border-slate-200 text-slate-700 font-bold select-none">
               <tr>
@@ -489,6 +540,21 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Shadow horizontal scrollbar: mirrors the table's own scrollLeft but
+          stays pinned to the bottom of the viewport instead of the bottom of
+          the (potentially very tall) table, so it's reachable without first
+          scrolling all the way down. Only rendered when the table actually
+          overflows horizontally. */}
+      {needsHorizontalScroll && (
+        <div
+          className="sticky bottom-2 z-10 w-full rounded-lg border border-slate-200 bg-white/95 shadow-md backdrop-blur-xs overflow-x-auto overflow-y-hidden h-3.5"
+          ref={shadowScrollRef}
+          onScroll={handleShadowScroll}
+        >
+          <div style={{ width: tableScrollWidth, height: 1 }} />
+        </div>
+      )}
 
       {/* Checkout / Return Modal */}
       {activeModalItem && (
