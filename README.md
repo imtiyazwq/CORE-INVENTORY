@@ -1,20 +1,45 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# CORE INVENTORY + AI Programme Consultant
 
-# Run and deploy your AI Studio app
+CORE INVENTORY is a React/TypeScript + Flask inventory application with YOLO/TFLite scanning, Stock Check approval, shared server-side inventory, authentication, offline mutation support, and an integrated Petrosains **AI Programme Consultant**.
 
-This contains everything you need to run your app locally.
+The new Programme Consultant interprets stakeholder requests, recommends only verified catalogue offerings, builds a programme storyline and participant journey, clearly separates AI-created enhancements, applies catalogue constraints, and uses the live inventory as read-only supporting context.
 
-View your app in AI Studio: https://ai.studio/apps/49adf1b2-ec8d-40f6-a242-1a773435f2de
+See [`AI-PROGRAMME-CONSULTANT.md`](AI-PROGRAMME-CONSULTANT.md) for the AI architecture and setup.
 
-## Run Locally
+## Local setup
 
-**Prerequisites:**  Node.js
+### 1. Install frontend dependencies
 
+```bash
+npm install
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 2. Install backend dependencies
+
+```bash
+python -m pip install -r database/requirements.txt
+```
+
+### 3. Start Flask
+
+```bash
+python database/app.py
+```
+
+### 4. Start Vite in another terminal
+
+```bash
+npm run dev
+```
+
+Vite forwards `/api` to `http://127.0.0.1:5000` during development.
+
+**No Gemini/OpenAI API key is required for the Programme Consultant.** It uses a local catalogue-guided recommendation engine in the Flask backend.
+
+## Production / Render
+
+`render.yaml` builds the Vite frontend and runs the Flask app with Gunicorn. No external AI API environment variable is required.
+
+## Existing inventory behaviour preserved
+
+A YOLO scan only changes inventory through one of two explicit actions the operator picks on the Scan page: "Send to Stock Check" (saved as a proposal; quantities change only after Stock Check reconciliation) or "Add to Inventory" (adds the detected count straight onto existing stock at that location, for restocking). The AI Programme Consultant has no inventory mutation endpoint.

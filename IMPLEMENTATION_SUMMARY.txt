@@ -1,0 +1,37 @@
+CORE INVENTORY — AI PROGRAMME CONSULTANT (NO API KEY)
+Date: 2026-09-26
+
+Added:
+- AI Programme Consultant sidebar page and responsive chat UI
+- Authenticated Flask /api/consultant/chat endpoint
+- Local catalogue-guided recommendation engine; no Gemini/OpenAI key required
+- 21 verified programme catalogue offerings converted to structured JSON
+- 25 theme mappings, 25 objective mappings, and 12 constraint rules
+- Verified Offering_ID-only recommendation logic
+- Proposed Enhancement visual separation
+- Conversational follow-up handling for current browser session
+- Live shared inventory cross-reference in read-only mode
+- Age, audience, capacity, duration, venue, electricity, internet, water, budget-band and accessibility checks
+- Multi-domain STEM handling so broad STEM requests do not default to Science only
+- Programme storyline and participant journey generation
+- Local consultant status endpoint and UI indicator
+- Guardrail tests
+
+Preserved:
+- Existing authentication
+- Dashboard
+- Inventory
+- YOLO/TFLite scan/upload/webcam flow
+- Stock Check approval-only inventory updates
+- Activity / History
+- Settings
+- Existing offline mutation / ESP relay behaviour
+- Existing shared inventory database flow
+
+To run:
+1. npm install
+2. python -m pip install -r database/requirements.txt
+3. python database/app.py
+4. In another terminal: npm run dev
+
+NO GEMINI KEY AND NO .env FILE ARE REQUIRED FOR THE CONSULTANT.

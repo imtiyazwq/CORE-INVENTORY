@@ -10,6 +10,8 @@ import {
   Cpu,
   Eye,
   EyeOff,
+  Sparkles,
+  ArrowRight,
 } from 'lucide-react';
 import { authService, PREDEFINED_TEAMS } from '../services/authService';
 import { UserAccount } from '../types';
@@ -17,9 +19,10 @@ import { UserAccount } from '../types';
 interface AuthPageProps {
   onAuthenticated?: (user: UserAccount) => void;
   onLoginSuccess?: (user: UserAccount) => void;
+  onPlanProgramme?: () => void;
 }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSuccess }) => {
+export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSuccess, onPlanProgramme }) => {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
 
   const notifyAuthenticated = (user: UserAccount) => {
@@ -428,6 +431,30 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated, onLoginSucc
             )}
           </div>
         </div>
+
+        {onPlanProgramme && (
+          <button
+            type="button"
+            onClick={onPlanProgramme}
+            className="w-full text-left rounded-2xl border border-teal-500/30 bg-gradient-to-br from-[#073f41] to-[#005f60] p-5 shadow-xl hover:from-[#08494b] hover:to-[#006b6d] transition-all group cursor-pointer"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-5 h-5 text-teal-100" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-extrabold text-white">Plan a Programme</h2>
+                    <span className="rounded-full bg-teal-200/15 border border-teal-200/20 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-teal-100">Guest access</span>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-teal-50/85">Explore verified Petrosains programme recommendations without a staff ID. Contact details are requested only after you choose a programme.</p>
+                </div>
+              </div>
+              <ArrowRight className="w-5 h-5 text-teal-100 shrink-0 transition-transform group-hover:translate-x-1" />
+            </div>
+          </button>
+        )}
       </div>
     </div>
   );
