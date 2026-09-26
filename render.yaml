@@ -20,7 +20,6 @@ services:
           name: core-inventory-db
           property: connectionString
 
-  - type: pserv
-    name: core-inventory-db
-    runtime: postgres
+databases:
+  - name: core-inventory-db
     plan: free
