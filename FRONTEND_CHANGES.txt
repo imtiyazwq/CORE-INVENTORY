@@ -1,0 +1,30 @@
+CORE INVENTORY - PROGRAMME CONSULTANT FRONT-END ONLY
+====================================================
+
+Front-end changes implemented:
+- Added "Plan a Programme" guest quick action to the login page.
+- Guest planner does not require staff login, user ID or password.
+- Removed AI Programme Consultant from the authenticated staff sidebar.
+- Added a standalone guest planner layout with Back to Login and Start Over.
+- Replaced the free-text chatbot prompt with structured input fields for theme,
+  objective, age/audience, participant count, duration, venue, electricity,
+  internet, water, budget, accessibility and optional requirements.
+- Bundled the verified Programme Catalogue as front-end read-only data.
+- Added local catalogue-based recommendation scoring and up to 3 programme options.
+- Added exact verified Offering IDs/titles and catalogue constraints to cards.
+- Added "How this programme can be conducted" and participant journey sections.
+- Added programme selection and review flow.
+- Contact details are requested ONLY AFTER the guest selects a programme.
+- Added booking-details form and a front-end-only confirmation preview.
+
+BACKEND / DATABASE NOT MODIFIED:
+- No real booking record is created.
+- No live stock re-check is performed.
+- No inventory items are reserved or checked out.
+- No Activity History entry is created.
+- No staff Inventory checked-out column is updated.
+- No multi-user/atomic reservation logic is implemented.
+
+The UI explicitly labels these limitations. This ZIP is intended as the FRONT-END
+prototype requested. The existing database folder is included unchanged because it
+is part of the original CORE INVENTORY project.

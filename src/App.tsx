@@ -7,6 +7,7 @@ import { ScanInventoryPage } from './pages/ScanInventoryPage';
 import { StockCheckPage } from './pages/StockCheckPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { ProgrammeConsultantPage } from './pages/ProgrammeConsultantPage';
 import { AuthPage } from './components/AuthPage';
 import { storageService, StorageState } from './services/storageService';
 import { modelService } from './services/modelService';
@@ -19,6 +20,7 @@ export const App: React.FC = () => {
   const [scanInitialMode, setScanInitialMode] = useState<'webcam' | 'upload'>('webcam');
   const [storageState, setStorageState] = useState<StorageState>(() => storageService.getState());
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [guestProgrammeMode, setGuestProgrammeMode] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [stockCheckInitialLocation, setStockCheckInitialLocation] = useState<ValidLocation>(VALID_LOCATIONS[0]);
 
@@ -223,11 +225,13 @@ export const App: React.FC = () => {
   const handleLogout = async () => {
     await authService.logout();
     setCurrentUser(null);
+    setGuestProgrammeMode(false);
     setActivePage('dashboard');
   };
 
   const handleUserLogin = async (user: UserAccount) => {
     setCurrentUser(user);
+    setGuestProgrammeMode(false);
     await storageService.refreshFromCloud();
   };
 
@@ -239,8 +243,12 @@ export const App: React.FC = () => {
     );
   }
 
+  if (!currentUser && guestProgrammeMode) {
+    return <ProgrammeConsultantPage onBackToLogin={() => setGuestProgrammeMode(false)} />;
+  }
+
   if (!currentUser) {
-    return <AuthPage onLoginSuccess={handleUserLogin} />;
+    return <AuthPage onLoginSuccess={handleUserLogin} onPlanProgramme={() => setGuestProgrammeMode(true)} />;
   }
 
   return (
@@ -297,6 +305,7 @@ export const App: React.FC = () => {
           )}
 
           {activePage === 'history' && <ActivityHistoryPage scanHistory={storageState.scanHistory} />}
+
 
           {activePage === 'settings' && (
             <SettingsPage
